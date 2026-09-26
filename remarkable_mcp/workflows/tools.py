@@ -587,12 +587,14 @@ def register_workflow_tools(write_enabled: bool) -> None:
         prompts,
         reading_tools,
         sketch_tools,
+        structure_tools,
     )
 
     overview_tools.register(mcp, write_enabled)
     live_tools.register(mcp, write_enabled)
     code_review_tools.register(mcp, write_enabled)
     latex_tools.register(mcp, write_enabled)
+    structure_tools.register(mcp, write_enabled)
     form_tools.register(mcp, write_enabled)
     inbox_tools.register(mcp, write_enabled)
     sketch_tools.register(mcp, write_enabled)

@@ -35,8 +35,13 @@ def configured() -> bool:
     return bool(os.environ.get("MYSCRIPT_APPLICATION_KEY") and os.environ.get("MYSCRIPT_HMAC_KEY"))
 
 
-def build_request(strokes: Sequence[Stroke], language: Optional[str] = None) -> Dict[str, object]:
-    """The batch request body for a group of strokes (in drawing order)."""
+def build_request(
+    strokes: Sequence[Stroke], language: Optional[str] = None, content_type: str = "Text"
+) -> Dict[str, object]:
+    """The batch request body for a group of strokes (in drawing order).
+
+    content_type "Text" returns plain text; "Math" returns LaTeX.
+    """
     ordered = sorted(strokes, key=lambda s: s.index)
     t = 0
     payload_strokes: List[Dict[str, List[float]]] = []
@@ -48,15 +53,19 @@ def build_request(strokes: Sequence[Stroke], language: Optional[str] = None) -> 
         ts = [t + 8 * i for i in range(len(s.points))]
         t = ts[-1] + 120 if ts else t
         payload_strokes.append({"x": xs, "y": ys, "t": ts, "pointerType": "PEN"})
+    configuration: Dict[str, object] = {
+        "lang": language or os.environ.get("MYSCRIPT_LANGUAGE", "en_US"),
+        "export": {"jiix": {"strokes": False, "bounding-box": False}},
+    }
+    if content_type == "Math":
+        configuration["math"] = {"solver": {"enable": False}}
+    else:
+        configuration["text"] = {"guides": {"enable": False}, "smartGuide": False}
     return {
-        "configuration": {
-            "lang": language or os.environ.get("MYSCRIPT_LANGUAGE", "en_US"),
-            "text": {"guides": {"enable": False}, "smartGuide": False},
-            "export": {"jiix": {"strokes": False, "bounding-box": False}},
-        },
+        "configuration": configuration,
         "xDPI": _POINTS_DPI,
         "yDPI": _POINTS_DPI,
-        "contentType": "Text",
+        "contentType": content_type,
         "strokeGroups": [{"strokes": payload_strokes}],
     }
 
@@ -66,18 +75,30 @@ def sign(body: bytes, application_key: str, hmac_key: str) -> str:
 
 
 def recognise_text(strokes: Sequence[Stroke], timeout: float = 30.0) -> Optional[str]:
-    """Plain-text transcription of the strokes, or None (never raises on API errors)."""
+    """Plain-text transcription of the strokes, or None when not configured."""
+    return _recognise(strokes, "Text", "text/plain", timeout)
+
+
+def recognise_math(strokes: Sequence[Stroke], timeout: float = 30.0) -> Optional[str]:
+    """LaTeX for handwritten math, or None when not configured."""
+    return _recognise(strokes, "Math", "application/x-latex", timeout)
+
+
+def _recognise(
+    strokes: Sequence[Stroke], content_type: str, mime: str, timeout: float
+) -> Optional[str]:
     import requests
 
     if not strokes or not configured():
         return None
     app_key = os.environ["MYSCRIPT_APPLICATION_KEY"]
-    body = json.dumps(build_request(strokes), separators=(",", ":")).encode()
+    body = json.dumps(build_request(strokes, content_type=content_type), separators=(",", ":"))
+    body = body.encode()
     resp = requests.post(
         BATCH_URL,
         data=body,
         headers={
-            "Accept": "application/json,text/plain",
+            "Accept": f"application/json,{mime}",
             "Content-Type": "application/json",
             "applicationKey": app_key,
             "hmac": sign(body, app_key, os.environ["MYSCRIPT_HMAC_KEY"]),

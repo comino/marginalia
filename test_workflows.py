@@ -11,6 +11,7 @@ import json
 import math
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pymupdf
@@ -105,11 +106,11 @@ def _rm_page(strokes):
     return buf.getvalue()
 
 
-def _doc_zip(pdf_bytes, ink_by_page, doc_id=None):
+def _doc_zip(pdf_bytes, ink_by_page, doc_id=None, page_ids=None):
     """A cloud-style document zip; ``ink_by_page`` maps 0-based page -> strokes."""
     doc_id = doc_id or str(uuid.uuid4())
     page_count = len(pymupdf.open(stream=pdf_bytes, filetype="pdf"))
-    page_ids = [str(uuid.uuid4()) for _ in range(page_count)]
+    page_ids = page_ids or [str(uuid.uuid4()) for _ in range(page_count)]
     content = {"fileType": "pdf", "formatVersion": 1, "pages": page_ids, "pageCount": page_count}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -459,6 +460,7 @@ class FakeCloud:
         self.docs = {}
         self.zips = {}
         self.ink = {}  # doc id -> {page: strokes}, applied at download time
+        self.page_ids = {}  # doc id -> tablet page uuids
 
     def _doc(self, doc_id, name, parent, folder=False):
         doc = SimpleNamespace(
@@ -487,6 +489,8 @@ class FakeCloud:
     def upload_document(self, content, name, file_type, parent_id="", orientation="portrait"):
         doc = self._doc(str(uuid.uuid4()), name, parent_id)
         self.zips[doc.id] = content
+        pages = len(pymupdf.open(stream=content, filetype="pdf"))
+        self.page_ids[doc.id] = [str(uuid.uuid4()) for _ in range(pages)]
         # Like the sync client: the returned document has no file index loaded yet.
         return SimpleNamespace(**{**vars(doc), "files": []})
 
@@ -494,16 +498,24 @@ class FakeCloud:
         self.ink[doc_id] = strokes_by_page
         doc = self.docs[doc_id]
         doc.hash = uuid.uuid4().hex
+        ids = self.page_ids.get(doc_id) or []
         doc.files = [f for f in doc.files if not f["id"].endswith(".rm")] + [
-            {"id": f"{doc_id}/page{p}.rm", "hash": uuid.uuid4().hex} for p in strokes_by_page
+            {"id": f"{doc_id}/{ids[p] if p < len(ids) else p}.rm", "hash": uuid.uuid4().hex}
+            for p in strokes_by_page
         ]
+        doc.last_modified = datetime.now(timezone.utc)
 
     def touch(self, doc_id):
         """Tablet-side metadata change (e.g. opened): doc hash changes, strokes don't."""
         self.docs[doc_id].hash = uuid.uuid4().hex
 
     def download(self, doc):
-        return _doc_zip(self.zips[doc.id], self.ink.get(doc.id, {}), doc_id=doc.id)
+        return _doc_zip(
+            self.zips[doc.id],
+            self.ink.get(doc.id, {}),
+            doc_id=doc.id,
+            page_ids=self.page_ids.get(doc.id),
+        )
 
 
 def _fake_path(item, by_id):

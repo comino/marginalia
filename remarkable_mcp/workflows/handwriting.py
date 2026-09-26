@@ -38,6 +38,10 @@ from remarkable_mcp.workflows.state import Store
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5"
+_MATH_PROMPT = (
+    "Transcribe the handwritten mathematics in this image as LaTeX. Output only the "
+    "LaTeX (no $ delimiters, no commentary). Use align* with \\\\ for several lines."
+)
 _PROMPT = (
     "Transcribe the handwriting in this image exactly. It is a reviewer's note "
     "on a document draft. Keep line breaks. Keep symbols like ?, !, arrows (write ->), "
@@ -138,7 +142,10 @@ def _strokes_key(strokes: Sequence[Stroke]) -> bytes:
 
 
 def transcribe(
-    png: bytes, engine: Optional[str] = None, strokes: Optional[Sequence[Stroke]] = None
+    png: bytes,
+    engine: Optional[str] = None,
+    strokes: Optional[Sequence[Stroke]] = None,
+    mode: str = "text",
 ) -> Tuple[Optional[str], str]:
     """Return (text or None, engine used). Never raises.
 
@@ -148,10 +155,14 @@ def transcribe(
     engine = engine or backend()
     if engine == "myscript" and not strokes:
         engine = _image_fallback()
+    if mode == "math" and engine in ("google", "tesseract"):
+        # Plain OCR engines can't write LaTeX; Claude can, MyScript has a math mode.
+        engine = "claude" if os.environ.get("ANTHROPIC_API_KEY") else "none"
     if engine == "none":
         return None, engine
     cache = Store("handwriting-cache")
-    key = _cache_key(_strokes_key(strokes) if engine == "myscript" else png, engine)
+    payload = _strokes_key(strokes) if engine == "myscript" else png
+    key = _cache_key((b"math\0" if mode == "math" else b"") + payload, engine)
     try:
         hit = cache.get(key)
     except Exception:
@@ -162,11 +173,12 @@ def transcribe(
         if engine == "myscript":
             from remarkable_mcp.workflows import myscript
 
-            text = myscript.recognise_text(strokes)
+            fn = myscript.recognise_math if mode == "math" else myscript.recognise_text
+            text = fn(strokes)
         elif engine == "google":
             text = _google(png)
         elif engine == "claude":
-            text = _claude(png)
+            text = _claude(png, _MATH_PROMPT if mode == "math" else _PROMPT)
         elif engine == "tesseract":
             text = _tesseract(png)
         else:
@@ -196,6 +208,7 @@ def transcribe_many(
     engine: Optional[str] = None,
     deadline: float = 50.0,
     strokes: Optional[Sequence[Sequence[Stroke]]] = None,
+    mode: str = "text",
 ) -> List[Tuple[Optional[str], str]]:
     """Transcribe crops in parallel; crops not done by ``deadline`` seconds get None.
 
@@ -212,7 +225,7 @@ def transcribe_many(
     pool = cf.ThreadPoolExecutor(max_workers=4)
     groups = list(strokes) if strokes is not None else [None] * len(pngs)
     futures = {
-        pool.submit(transcribe, png, engine, group): i
+        pool.submit(transcribe, png, engine, group, mode): i
         for i, (png, group) in enumerate(zip(pngs, groups))
     }
     try:
@@ -248,7 +261,7 @@ def _google(png: bytes) -> Optional[str]:
     return text or None
 
 
-def _claude(png: bytes) -> Optional[str]:
+def _claude(png: bytes, prompt: str = _PROMPT) -> Optional[str]:
     import requests
 
     resp = requests.post(
@@ -273,7 +286,7 @@ def _claude(png: bytes) -> Optional[str]:
                                 "data": base64.b64encode(png).decode(),
                             },
                         },
-                        {"type": "text", "text": _PROMPT},
+                        {"type": "text", "text": prompt},
                     ],
                 }
             ],

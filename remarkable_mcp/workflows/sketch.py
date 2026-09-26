@@ -234,7 +234,9 @@ def classify_outline(points: Sequence[Point], strokes: List[Stroke]) -> Optional
     length = _path_length(points)
     closure = math.dist(points[0], points[-1]) / size
 
-    if closure < 0.25 and length > 2.2 * size and min(w, h) > 0.2 * size:
+    # Closed outline. Flat shapes (text inputs, table borders) are fine: only
+    # require the short side to be more than a sliver.
+    if closure < 0.25 and length > 2.0 * size and min(w, h) > 0.08 * size:
         simple = rdp(points, 0.07 * size)
         if len(simple) > 2 and math.dist(simple[0], simple[-1]) < 0.25 * size:
             simple = simple[:-1]
