@@ -3,7 +3,15 @@
 import asyncio
 import sys
 
+import pytest
+
 from remarkable_mcp.workflows import autopilot
+
+
+@pytest.fixture(autouse=True)
+def isolated_state(tmp_path, monkeypatch):
+    """Never read or write the real ~/.local/state from tests."""
+    monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
 
 ATT = {
     "attention": [

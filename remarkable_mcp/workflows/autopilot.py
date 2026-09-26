@@ -47,10 +47,11 @@ from remarkable_mcp.workflows.state import Store, state_root
 
 logger = logging.getLogger("remarkable_autopilot")
 
-CONFIG_PATH = Path(
-    os.environ.get("REMARKABLE_AUTOPILOT_CONFIG")
-    or Path.home() / ".config" / "remarkable-mcp" / "autopilot.json"
-)
+def config_path() -> Path:
+    return Path(
+        os.environ.get("REMARKABLE_AUTOPILOT_CONFIG")
+        or Path.home() / ".config" / "remarkable-mcp" / "autopilot.json"
+    )
 
 DEFAULTS = {
     "agent_command": None,
@@ -74,8 +75,9 @@ _STATUS_DE = {"annotated": "neue Tinte", "done": "fertig", "collected": "gelesen
 
 def load_config() -> dict:
     cfg = dict(DEFAULTS)
-    if CONFIG_PATH.is_file():
-        cfg.update(json.loads(CONFIG_PATH.read_text()))
+    path = config_path()
+    if path.is_file():
+        cfg.update(json.loads(path.read_text()))
     return cfg
 
 

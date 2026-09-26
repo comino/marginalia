@@ -50,3 +50,16 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip_integration)
+
+
+@pytest.fixture(autouse=True)
+def isolate_workflow_state(tmp_path_factory, monkeypatch):
+    """Workflow state, TRMNL quota and autopilot config never touch the real home.
+
+    Tests that need a specific directory may still override these env vars.
+    """
+    base = tmp_path_factory.mktemp("state")
+    monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(base / "remarkable"))
+    monkeypatch.setenv("TRMNL_STATE_DIR", str(base / "trmnl"))
+    monkeypatch.setenv("REMARKABLE_AUTOPILOT_CONFIG", str(base / "autopilot.json"))
+    yield
