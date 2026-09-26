@@ -88,6 +88,10 @@ For handwriting OCR, add a Google Vision API key:
 | `remarkable_recent` | List recently modified documents |
 | `remarkable_image` | Render pages as PNG or SVG |
 | `remarkable_status` | Check connection and device info |
+| `remarkable_annotations` | What the pen marks on a document mean (strike, underline, circle, notes) |
+| `remarkable_review_send` | Send a Markdown draft to the tablet for pen review |
+| `remarkable_review_collect` | Get the review's marks as change requests with source line numbers |
+| `remarkable_review_list` | See which reviews have new marks |
 
 ## Workflow
 
@@ -95,3 +99,11 @@ For handwriting OCR, add a Google Vision API key:
 2. Use `remarkable_read` to extract text content
 3. Use `remarkable_image` to render visual pages
 4. Use `page` parameter to paginate through multi-page documents
+
+## Review workflow
+
+1. `remarkable_review_send(source_path="/path/draft.md")` uploads a review PDF to `/Review`
+2. The user marks it up with the pen (strike = delete, circle/underline + note = change)
+3. `remarkable_review_collect("<review>")` returns change requests with `src_line`
+4. Edit the draft, then `remarkable_review_send(source_path=..., responses=[{id, status, reply}])`
+

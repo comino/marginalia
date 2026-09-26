@@ -427,6 +427,10 @@ Or copy the `SKILL.md` from this repository into your `~/.openclaw/skills/remark
 | `remarkable_status` | Check connection status and the per-transport capability matrix |
 | `remarkable_image` | Get PNG/SVG images of pages with optional OCR |
 | `remarkable_export` | Export one document as a temporary PDF or Markdown resource |
+| `remarkable_annotations` | Interpret pen marks (strike, underline, circle, notes…) on any document |
+| `remarkable_review_send` | Send a Markdown draft as a pen-review PDF (numbered paragraphs, note margin) |
+| `remarkable_review_collect` | Turn review marks into change requests pointing at source lines |
+| `remarkable_review_list` | List review rounds and which have new marks waiting |
 
 The read/search/render tools are read-only. `remarkable_export` never changes the
 tablet, but it writes a bounded temporary file on the MCP server host and therefore
@@ -436,7 +440,7 @@ Supported transports also register write tools by default; pass `--read-only` to
 disable them. See [Write Tools](#write-tools-by-transport). Clients that support
 [MCP Apps](#interactive-canvas-app-mcp-apps) can also open `remarkable_canvas`.
 
-[Full tools reference](docs/tools.md)
+[Full tools reference](docs/tools.md) · [Workflow tools: pen review, ink analysis](docs/workflows.md)
 
 ### Tool behavior
 

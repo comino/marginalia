@@ -375,7 +375,7 @@ def _bar_targets(bar: Rect, words: Sequence[Word], word_h: float) -> List[Word]:
     for w in side:
         by_line.setdefault(line_of[id(w)], []).append(w)
     picked: List[Word] = []
-    max_gap = 2.5 * word_h
+    max_gap = 1.2 * word_h  # word spacing is ~0.3 word_h; column gutters are wider
     for line_words in by_line.values():
         line_words.sort(key=lambda w: w.rect[0] * outward)
         edge = bx
