@@ -1,17 +1,28 @@
+# reMarkable autopilot as a systemd *user* service.
+#   cp contrib/remarkable-autopilot.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now remarkable-autopilot
+# Logs: journalctl --user -u remarkable-autopilot -f
 [Unit]
 Description=reMarkable autopilot (live tablet watcher, TRMNL mirror, optional agent)
 After=network-online.target
 Wants=network-online.target
+# Give up after repeated crashes instead of restarting forever.
+StartLimitIntervalSec=900
+StartLimitBurst=5
 
 [Service]
 Type=simple
-# uvx fetches the fork; adjust the ref or use a local checkout path.
-ExecStart=%h/.local/bin/uvx --from "remarkable-mcp[web] @ git+https://github.com/comino/remarkable-mcp@main" remarkable-autopilot
+# User services get a minimal PATH; the agent command (e.g. claude) and uvx
+# usually live in ~/.local/bin.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Pinned to a release so a push to main never changes a running daemon.
+# To upgrade: change the tag, then daemon-reload + restart.
+ExecStart=%h/.local/bin/uvx --from "git+https://github.com/comino/marginalia@v1.0.0" remarkable-autopilot
 Restart=on-failure
 RestartSec=30
-# Keep it light on this small box.
 Nice=10
-MemoryMax=400M
+# The daemon itself needs ~150 MB; an agent run (claude -p + MCP servers) more.
+MemoryMax=1200M
 
 [Install]
 WantedBy=default.target

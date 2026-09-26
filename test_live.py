@@ -108,55 +108,92 @@ async def _fast_sleep(seconds, *a, **k):
     await _real_sleep(min(seconds, 0.01))
 
 
+class FakeWatcher:
+    """Just the parts of Watcher that remarkable_live_watch uses."""
+
+    def __init__(self, changes=(), mode="socket"):
+        self.mode, self.events_seen = mode, len(changes)
+        self.history = [(n, ch) for n, ch in enumerate(changes, start=1)]
+        self.seq = 0  # the tool snapshots seq at start; events "arrive" after
+
+    def changes_since(self, seq):
+        return [(n, ch) for n, ch in self.history if n > seq and n <= self.seq]
+
+    def arrive(self, upto):
+        self.seq = upto
+
+
+def _patch(monkeypatch, watcher, arrivals=()):
+    async def fake_shared():
+        async def feed():
+            for delay, upto in arrivals:
+                await asyncio.sleep(delay)
+                watcher.arrive(upto)
+
+        asyncio.get_running_loop().create_task(feed())
+        return watcher
+
+    monkeypatch.setattr(live, "shared_watcher", fake_shared)
+
+
 def test_live_watch_tool_times_out_cleanly(monkeypatch):
     from remarkable_mcp.workflows import live_tools
 
-    class Idle:
-        mode, events_seen = "socket", 0
-
-        def subscribe(self):
-            return asyncio.Queue()
-
-        def unsubscribe(self, q):
-            pass
-
-    async def fake_shared():
-        return Idle()
-
-    monkeypatch.setattr(live, "shared_watcher", fake_shared)
+    _patch(monkeypatch, FakeWatcher())
     out = json.loads(asyncio.run(live_tools.remarkable_live_watch(timeout=5)))
-    assert out["status"] == "no_change"
+    assert out["status"] == "no_change" and out["cursor"] == 0
 
 
 def test_live_watch_tool_batches_and_filters(monkeypatch):
     from remarkable_mcp.workflows import live_tools
 
-    q: asyncio.Queue = asyncio.Queue()
-
-    class Busy:
-        mode, events_seen = "socket", 3
-
-        def subscribe(self):
-            return q
-
-        def unsubscribe(self, q):
-            pass
-
-    async def fake_shared():
-        for ch in (
+    w = FakeWatcher(
+        [
             live.Change("x", "Other", "/Other", "ink", ["p9"]),
             live.Change("a", "Sketch", "/Sketch", "ink", ["p1"]),
             live.Change("a", "Sketch", "/Sketch", "ink", ["p2"]),
-        ):
-            q.put_nowait(ch)
-        return Busy()
-
-    monkeypatch.setattr(live, "shared_watcher", fake_shared)
+        ]
+    )
+    _patch(monkeypatch, w, arrivals=[(0.1, 2), (0.2, 3)])
     out = json.loads(
         asyncio.run(
-            live_tools.remarkable_live_watch("sketch", timeout=5, settle=0.2, analyse="none")
+            live_tools.remarkable_live_watch("sketch", timeout=5, settle=0.5, analyse="none")
         )
     )
-    assert out["status"] == "changed"
+    assert out["status"] == "changed" and out["cursor"] == 3
     [change] = out["changes"]
     assert change["document"] == "Sketch" and change["changed_page_ids"] == ["p1", "p2"]
+    # Shared events were not mutated by the merge.
+    assert w.history[1][1].pages == ["p1"]
+
+
+def test_live_watch_resumes_from_cursor(monkeypatch):
+    from remarkable_mcp.workflows import live_tools
+
+    w = FakeWatcher([live.Change("a", "Sketch", "/Sketch", "ink", ["p1"])])
+    w.seq = 1  # happened while the agent was busy with the previous answer
+    _patch(monkeypatch, w)
+    out = json.loads(
+        asyncio.run(
+            live_tools.remarkable_live_watch(
+                "Sketch", timeout=5, settle=0.2, analyse="none", since=0
+            )
+        )
+    )
+    assert out["status"] == "changed" and out["changes"][0]["changed_page_ids"] == ["p1"]
+
+
+def test_live_watch_settle_is_bounded_by_timeout(monkeypatch):
+    import time as _time
+
+    from remarkable_mcp.workflows import live_tools
+
+    changes = [live.Change("a", "S", "/S", "ink", [f"p{i}"]) for i in range(200)]
+    w = FakeWatcher(changes)
+    _patch(monkeypatch, w, arrivals=[(0.2, i) for i in range(1, 200)])  # never pauses
+    t0 = _time.time()
+    out = json.loads(
+        asyncio.run(live_tools.remarkable_live_watch("S", timeout=5, settle=1.0, analyse="none"))
+    )
+    assert out["status"] == "changed"
+    assert _time.time() - t0 < 5 + 1.0 + 1.5

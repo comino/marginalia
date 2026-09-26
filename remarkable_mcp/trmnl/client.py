@@ -92,6 +92,8 @@ def _urllib_http(
         return HttpResponse(e.code, e.read().decode("utf-8", "replace"))
     except urllib.error.URLError as e:
         raise TrmnlError(f"Network error talking to TRMNL: {e.reason}") from e
+    except OSError as e:  # read timeouts, connection resets (not wrapped in URLError)
+        raise TrmnlError(f"Network error talking to TRMNL: {e}") from e
 
 
 # --------------------------------------------------------------------------- content rules

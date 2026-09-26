@@ -7,6 +7,7 @@ import io
 import tempfile
 import time
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
 
@@ -60,19 +61,8 @@ def _analyse(doc_id: str, page_ids: List[str], mode: str, include_images: bool):
                 item["marks"] = [r.to_dict(None, "none") for r in reqs]
             if use in ("sketch", "regions"):
                 d = recognise(page.strokes)
-                if d.is_diagram:
-                    labels = d.labels()
-                    crops = [
-                        handwriting.render_strokes_png(lab.strokes, lab.rect) for lab in labels
-                    ]
-                    texts = handwriting.transcribe_many(
-                        crops, strokes=[lab.strokes for lab in labels]
-                    )
-                    for lab, (text, _) in zip(labels, texts):
-                        lab.text = text
-                    item["diagram"] = {**summary(d), "mermaid": to_mermaid(d)}
-                else:
-                    item["diagram"] = None
+                item["diagram"] = d if d.is_diagram else None  # labels read after the lock
+
             if include_images:
                 png, _ = render_merged_page_from_extracted_document(
                     Path(tmp), page.page, canvas_width=700, canvas_height=933
@@ -80,6 +70,18 @@ def _analyse(doc_id: str, page_ids: List[str], mode: str, include_images: bool):
                 if png:
                     images.append((f"page {page.page}", "current page", png))
             pages_out.append(item)
+    # Transcription can call a network OCR backend: do it without holding the
+    # MuPDF lock, which every render tool shares.
+    for item in pages_out:
+        d = item.get("diagram")
+        if d is None:
+            continue
+        labels = d.labels()
+        crops = [handwriting.render_strokes_png(lab.strokes, lab.rect) for lab in labels]
+        texts = handwriting.transcribe_many(crops, strokes=[lab.strokes for lab in labels])
+        for lab, (text, _) in zip(labels, texts):
+            lab.text = text
+        item["diagram"] = {**summary(d), "mermaid": to_mermaid(d)}
     return pages_out, images
 
 
@@ -89,6 +91,7 @@ async def remarkable_live_watch(
     settle: float = 4.0,
     analyse: str = "auto",
     include_images: bool = True,
+    since: Optional[int] = None,
 ):
     """
     <usecase>Wait for the user to write or draw on the tablet, then see what changed.</usecase>
@@ -100,8 +103,10 @@ async def remarkable_live_watch(
     - "annotations" on PDFs (strikes, circles, notes anchored to text),
     - "sketch" on notebooks (diagram nodes/edges + Mermaid when it is a diagram),
     - a render of each changed page (include_images=true).
-    Call it again in a loop to follow a live sketching session. Returns
-    status "no_change" after `timeout` seconds - just call again.
+    Every answer carries a "cursor". Pass it back as `since` on the next call
+    and nothing that happened in between is missed - that is how to follow a
+    live sketching session. Returns status "no_change" after `timeout`
+    seconds; just call again with the same cursor.
     </instructions>
     <parameters>
     - document: Name, path or id to follow (default: any document).
@@ -109,10 +114,11 @@ async def remarkable_live_watch(
     - settle: Seconds of quiet after a change before answering (default 4).
     - analyse: "auto" | "annotations" | "sketch" | "none".
     - include_images: Attach renders of the changed pages (default true).
+    - since: Cursor from the previous call (default: only changes from now on).
     </parameters>
     <examples>
-    - remarkable_live_watch("Whiteboard")          # follow one notebook
-    - remarkable_live_watch(timeout=300, analyse="none")  # what is the user touching?
+    - remarkable_live_watch("Whiteboard")                  # first call
+    - remarkable_live_watch("Whiteboard", since=17)        # continue from cursor 17
     </examples>
     """
     timeout = max(5, min(int(timeout), 600))
@@ -120,40 +126,50 @@ async def remarkable_live_watch(
         watcher = await live.shared_watcher()
     except Exception as exc:
         return make_error("watch_failed", str(exc), "Check remarkable_status().")
-    queue = watcher.subscribe()
-    try:
-        deadline = time.time() + timeout
-        batch: List[live.Change] = []
-        while time.time() < deadline:
-            try:
-                ch = await asyncio.wait_for(queue.get(), timeout=max(0.1, deadline - time.time()))
-            except asyncio.TimeoutError:
-                break
-            if ch.kind in ("ink", "new") and _matches(ch, document):
-                batch.append(ch)
-                # Collect everything until the user pauses for `settle` seconds.
-                while True:
-                    try:
-                        more = await asyncio.wait_for(queue.get(), timeout=settle)
-                    except asyncio.TimeoutError:
-                        break
-                    if more.kind in ("ink", "new") and _matches(more, document):
-                        batch.append(more)
-                break
-    finally:
-        watcher.unsubscribe(queue)
 
-    status = {"watch_mode": watcher.mode, "syncs_seen": watcher.events_seen}
+    def wanted(ch: live.Change) -> bool:
+        return ch.kind in ("ink", "new") and _matches(ch, document)
+
+    start_seq = watcher.seq if since is None else int(since)
+    deadline = time.time() + timeout
+    batch: List[live.Change] = []
+    cursor = start_seq
+    while time.time() < deadline:
+        pending = [(n, ch) for n, ch in watcher.changes_since(cursor) if wanted(ch)]
+        if pending:
+            batch += [ch for _, ch in pending]
+            cursor = max(cursor, watcher.seq)
+            # Keep collecting until the user pauses for `settle` seconds (bounded
+            # by the deadline plus one settle period).
+            quiet_until = time.time() + settle
+            while time.time() < min(quiet_until, deadline + settle):
+                await asyncio.sleep(0.25)
+                more = [ch for n, ch in watcher.changes_since(cursor) if wanted(ch)]
+                if more:
+                    batch += more
+                    cursor = max(cursor, watcher.seq)
+                    quiet_until = time.time() + settle
+            break
+        cursor = max(cursor, watcher.seq)  # skip unrelated changes
+        await asyncio.sleep(0.5)
+
+    status = {
+        "watch_mode": watcher.mode,
+        "syncs_seen": watcher.events_seen,
+        "cursor": max(cursor, start_seq),
+    }
     if not batch:
         return make_response(
             {"status": "no_change", **status},
-            "Nothing changed yet. Call remarkable_live_watch again to keep following.",
+            f"Nothing changed yet. Call again with since={status['cursor']} to keep following.",
         )
 
     merged: dict = {}
     for ch in batch:
-        entry = merged.setdefault(ch.doc_id, ch)
-        if entry is not ch:
+        if ch.doc_id not in merged:
+            merged[ch.doc_id] = replace(ch, pages=list(ch.pages))  # never mutate shared events
+        else:
+            entry = merged[ch.doc_id]
             entry.pages = sorted(set(entry.pages) | set(ch.pages))
     changes = list(merged.values())
     result = {"status": "changed", **status, "changes": [c.to_dict() for c in changes]}
@@ -168,7 +184,7 @@ async def remarkable_live_watch(
             result["analysis_error"] = str(exc)
     payload = make_response(
         result,
-        "Call remarkable_live_watch again to keep following"
+        f"Call remarkable_live_watch again with since={status['cursor']} to keep following"
         + (f" '{document}'." if document else " the tablet."),
     )
     return cloud.with_images(payload, images) if images else payload
@@ -195,7 +211,7 @@ async def remarkable_live_status() -> str:
             "refresh_errors": w.errors_total,
             "last_error": w.last_error,
         },
-        "socket = push notifications; polling = fallback every 20s.",
+        "socket = push notifications; polling = fallback (60 s, backing off to 5 min).",
     )
 
 

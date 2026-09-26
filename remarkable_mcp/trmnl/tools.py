@@ -45,6 +45,11 @@ _REPLACE = ToolAnnotations(
 _client: TrmnlClient | None = None
 
 
+def _masked(url: str) -> str:
+    head, _, uuid = url.rstrip("/").rpartition("/")
+    return f"{head}/{uuid[:4]}…" if uuid else url
+
+
 def get_client() -> TrmnlClient:
     global _client
     if _client is None:
@@ -69,7 +74,9 @@ def trmnl_status() -> str:
         current = c.get()
         info = {
             "config_source": c.config.source,
-            "plugin_url": c.plugin_url,
+            # The plugin UUID is a write credential for the display: never
+            # hand it to an agent's context.
+            "plugin_url": _masked(c.plugin_url),
             "image_upload_configured": c.image_url is not None,
             "pushes_left_this_hour": c.pushlog.remaining(),
             "pushes_last_hour": len(c.pushlog.recent()),

@@ -123,3 +123,12 @@ async def test_quota_error_is_reported_not_raised(fake_client, monkeypatch):
     r = await server.mcp.call_tool("trmnl_set_slot", {"slot": 1, "lines": ["x"]})
     assert "ERROR: Local quota exhausted" in _text(r)
     assert fake_client.posts == []
+
+
+async def test_status_never_shows_the_plugin_uuid(tmp_path, monkeypatch):
+    secret = "0f1e2d3c-4b5a-6978-8a9b-acbdcedfe0f1"
+    cfg = Config(plugin_uuid=secret, state_dir=tmp_path, source="test")
+    monkeypatch.setattr(server, "_client", TrmnlClient(cfg, http=FakeHttp()))
+    s = _text(await server.mcp.call_tool("trmnl_status", {}))
+    assert secret not in s and secret[4:] not in s
+    assert "custom_plugins/0f1e…" in s

@@ -70,7 +70,10 @@ async def remarkable_whats_new() -> str:
     </instructions>
     """
     kinds = ("reviews", "forms", "inbox", "reading")
-    records = {k: list(Store(k).all()) for k in kinds}
+    try:
+        records = {k: list(Store(k).all()) for k in kinds}
+    except Exception as exc:  # unreadable state dir: report, don't crash callers
+        return make_error("state_unreadable", str(exc), "Check ~/.local/state/remarkable-mcp.")
     if not any(records.values()):
         return make_response(
             {"attention": [], "tracked": 0},

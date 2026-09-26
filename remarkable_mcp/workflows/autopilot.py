@@ -36,13 +36,14 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import List, Optional
 
-from remarkable_mcp.workflows.state import state_root
+from remarkable_mcp.workflows.state import Store, state_root
 
 logger = logging.getLogger("remarkable_autopilot")
 
@@ -59,6 +60,7 @@ DEFAULTS = {
     "agent_timeout_seconds": 900,
     "trmnl_slot": 5,
     "trmnl_min_interval_seconds": 900,
+    "watch_min_refresh_seconds": 30,
 }
 
 _KIND_DE = {
@@ -103,9 +105,14 @@ class Autopilot:
         self.dry_run = dry_run
         self.last_agent_run = 0.0
         self.last_agent_signature: Optional[str] = None
-        self.last_trmnl_push = 0.0
-        self.last_trmnl_text: Optional[str] = None
         self.log_path = state_root() / "autopilot.log"
+        # What is on the display survives restarts: a restart must not spend
+        # one of the display's 12 pushes/hour re-sending the same text.
+        self._store = Store("autopilot")
+        saved = self._store.get("trmnl") or {}
+        self.last_trmnl_push = float(saved.get("pushed_at", 0.0))
+        self.last_trmnl_text: Optional[str] = saved.get("text")
+        self.mirror_due: Optional[float] = None  # changed text waiting for the rate window
 
     # ------------------------------------------------------------ checks
 
@@ -115,12 +122,23 @@ class Autopilot:
         return json.loads(await remarkable_whats_new())
 
     async def check(self) -> dict:
-        ov = await self.overview()
+        """One pass: overview -> TRMNL mirror -> maybe agent. Never raises."""
+        try:
+            ov = await self.overview()
+        except Exception as exc:  # corrupt state, network ... the loop must survive
+            logger.warning("overview failed: %s", exc)
+            return {"_error": str(exc)}
         if "_error" in ov:
             logger.warning("overview failed: %s", ov["_error"])
             return ov
-        self.mirror(ov)
-        await self.maybe_run_agent(ov)
+        try:
+            self.mirror(ov)
+        except Exception as exc:
+            logger.warning("TRMNL mirror failed: %s", exc)
+        try:
+            await self.maybe_run_agent(ov)
+        except Exception as exc:
+            logger.warning("agent run failed: %s", exc)
         return ov
 
     # ------------------------------------------------------------ TRMNL
@@ -131,9 +149,13 @@ class Autopilot:
             return None
         text = "\n".join(trmnl_lines(overview))
         if text == self.last_trmnl_text:
+            self.mirror_due = None
             return None
-        if time.time() - self.last_trmnl_push < self.cfg["trmnl_min_interval_seconds"]:
+        wait = self.cfg["trmnl_min_interval_seconds"] - (time.time() - self.last_trmnl_push)
+        if wait > 0:
+            self.mirror_due = time.time() + wait  # re-check when the window opens
             return None
+        self.mirror_due = None
         if self.dry_run:
             logger.info("[dry-run] TRMNL slot %s <- %r", slot, text)
             self.last_trmnl_text = text
@@ -148,6 +170,7 @@ class Autopilot:
             return None
         self.last_trmnl_text = text
         self.last_trmnl_push = time.time()
+        self._store.put("trmnl", {"text": text, "pushed_at": self.last_trmnl_push})
         logger.info("TRMNL slot %s updated", slot)
         return text
 
@@ -176,8 +199,8 @@ class Autopilot:
         if time.time() - self.last_agent_run < self.cfg["min_agent_interval_seconds"]:
             return None
         self.last_agent_run = time.time()
-        self.last_agent_signature = sig
         if self.dry_run:
+            self.last_agent_signature = sig
             logger.info("[dry-run] would run agent: %s", argv[0])
             return 0
         logger.info("starting agent for %d item(s)", len(overview["attention"]))
@@ -185,19 +208,9 @@ class Autopilot:
         with open(self.log_path, "a") as log:
             log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} agent run: {sig}\n")
             log.flush()
-            try:
-                proc = await asyncio.to_thread(
-                    subprocess.run,
-                    argv,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    timeout=self.cfg["agent_timeout_seconds"],
-                    cwd=str(Path.home()),
-                )
-                code = proc.returncode
-            except subprocess.TimeoutExpired:
-                log.write("agent timed out\n")
-                code = -1
+            code = await asyncio.to_thread(_run_agent, argv, log, self.cfg["agent_timeout_seconds"])
+        if code == 0:
+            self.last_agent_signature = sig  # handled; a failed run is retried later
         logger.info("agent finished with %s", code)
         return code
 
@@ -206,7 +219,7 @@ class Autopilot:
     async def run(self) -> None:
         from remarkable_mcp.workflows import live
 
-        watcher = live.Watcher()
+        watcher = live.Watcher(min_refresh=self.cfg["watch_min_refresh_seconds"])
         queue = watcher.subscribe()
         task = asyncio.create_task(watcher.run())
         logger.info("autopilot running (dry_run=%s)", self.dry_run)
@@ -214,10 +227,17 @@ class Autopilot:
         debounce = self.cfg["debounce_seconds"]
         try:
             while True:
+                if task.done():  # the watcher must never be silently dead
+                    exc = None if task.cancelled() else task.exception()
+                    logger.warning("watcher stopped (%r); restarting it", exc)
+                    task = asyncio.create_task(watcher.run())
+                idle = 900.0
+                if self.mirror_due is not None:
+                    idle = max(1.0, min(idle, self.mirror_due - time.time()))
                 try:
-                    await asyncio.wait_for(queue.get(), timeout=900)
+                    await asyncio.wait_for(queue.get(), timeout=idle)
                 except asyncio.TimeoutError:
-                    await self.check()  # periodic safety net
+                    await self.check()  # periodic safety net / pending TRMNL update
                     continue
                 # Wait for the user to pause: reset the timer on every new change.
                 while True:
@@ -228,6 +248,35 @@ class Autopilot:
                 await self.check()
         finally:
             task.cancel()
+
+
+def _run_agent(argv: List[str], log, timeout: float) -> int:
+    """Run the agent in its own process group; on timeout kill the whole group
+    (claude -p spawns MCP servers that would otherwise be orphaned)."""
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            cwd=str(Path.home()),
+            start_new_session=True,
+        )
+    except OSError as exc:  # command not found / not executable
+        log.write(f"agent could not start: {exc}\n")
+        return -2
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log.write("agent timed out; killing its process group\n")
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=10)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        return -1
 
 
 def main(argv: Optional[List[str]] = None) -> None:

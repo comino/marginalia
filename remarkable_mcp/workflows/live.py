@@ -23,8 +23,9 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Deque, Dict, List, Optional, Tuple
 
 from remarkable_mcp.api import get_item_path, get_items_by_id
 from remarkable_mcp.workflows import cloud
@@ -33,10 +34,16 @@ logger = logging.getLogger(__name__)
 
 NOTIFICATIONS_PATH = "/notifications/ws/json/1"
 POLL_SECONDS = 60.0
-# The sync API rate-limits (HTTP 429). While someone writes, the tablet syncs
-# every few seconds; refreshes are coalesced to one per window, with a trailing
-# refresh so the last change of a burst is never missed.
-MIN_REFRESH_SECONDS = 3.0
+# The sync API rate-limits (HTTP 429, ~30 requests per short window, shared by
+# every client of the account). While someone writes, the tablet syncs every
+# few seconds; refreshes are coalesced to one per window, and a sync that
+# arrives during a refresh schedules another, so the last change of a burst is
+# never missed.
+MIN_REFRESH_SECONDS = 10.0
+# A socket that closes sooner than this counts as a failed connection (backoff),
+# so a server that accepts and immediately drops us cannot cause a tight loop.
+HEALTHY_CONNECTION_SECONDS = 30.0
+HISTORY = 500  # recent changes kept for resuming consumers (see changes_since)
 # Per-subscriber backlog cap: a consumer that stops reading loses the oldest
 # events instead of growing memory for days.
 MAX_QUEUE = 500
@@ -99,7 +106,8 @@ def diff(old: Dict[str, DocState], new: Dict[str, DocState]) -> List[Change]:
     for doc_id, cur in new.items():
         prev = old.get(doc_id)
         if prev is None:
-            changes.append(Change(doc_id, cur.name, cur.path, "new", sorted(cur.pages)))
+            pages = sorted(_page_id(fid) for fid in cur.pages if fid != "*")
+            changes.append(Change(doc_id, cur.name, cur.path, "new", pages))
             continue
         if cur.trashed and not prev.trashed:
             changes.append(Change(doc_id, cur.name, cur.path, "removed"))
@@ -139,10 +147,12 @@ class Watcher:
         take_snapshot: Optional[Callable[[], Dict[str, DocState]]] = None,
         connect=None,
         poll_seconds: float = POLL_SECONDS,
+        min_refresh: Optional[float] = None,
     ):
         self._take_snapshot = take_snapshot or self._default_snapshot
         self._connect = connect or self._default_connect
         self.poll_seconds = poll_seconds
+        self.min_refresh = MIN_REFRESH_SECONDS if min_refresh is None else min_refresh
         self.state: Optional[Dict[str, DocState]] = None
         self.mode = "starting"  # "socket" | "polling"
         self.last_event: Optional[float] = None
@@ -150,7 +160,11 @@ class Watcher:
         self._queues: List[asyncio.Queue] = []
         self._lock = asyncio.Lock()
         self._last_refresh = 0.0
-        self._trailing: Optional[asyncio.Task] = None
+        self._pump: Optional[asyncio.Task] = None
+        self._dirty = False
+        self._missing: Dict[str, int] = {}  # docs absent from the last snapshot(s)
+        self.seq = 0  # sequence number of the latest published change
+        self.history: Deque[Tuple[int, Change]] = deque(maxlen=HISTORY)
         self.errors = 0  # consecutive failed metadata reads (drives backoff)
         self.errors_total = 0  # failed metadata reads since start
         self.last_error: Optional[str] = None
@@ -174,17 +188,28 @@ class Watcher:
         cloud.refresh(c)
         return snapshot(c)
 
+    def changes_since(self, seq: int) -> List[Tuple[int, Change]]:
+        """Published changes with a sequence number above ``seq`` (oldest first)."""
+        return [(n, ch) for n, ch in self.history if n > seq]
+
     def request_refresh(self) -> None:
-        """Coalesced refresh: now if the window allows, else once at its end."""
-        if self._trailing is not None and not self._trailing.done():
-            return
-        wait = max(0.0, MIN_REFRESH_SECONDS - (time.time() - self._last_refresh))
+        """Ask for a refresh; coalesced to one per ``min_refresh`` window.
 
-        async def later():
-            await asyncio.sleep(wait)
+        A single pump task serves all requests: a request arriving while a
+        refresh is running marks the state dirty, so the pump refreshes once
+        more after it - the last sync of a burst is always picked up.
+        """
+        self._dirty = True
+        if self._pump is None or self._pump.done():
+            self._pump = asyncio.create_task(self._run_pump())
+
+    async def _run_pump(self) -> None:
+        while self._dirty:
+            wait = max(0.0, self.min_refresh - (time.time() - self._last_refresh))
+            if wait:
+                await asyncio.sleep(wait)
+            self._dirty = False
             await self.safe_refresh()
-
-        self._trailing = asyncio.create_task(later())
 
     async def refresh(self) -> List[Change]:
         """Re-read metadata, publish and return what changed since the last look."""
@@ -194,9 +219,22 @@ class Watcher:
             if self.state is None:
                 self.state = new
                 return []
+            # A document missing from one snapshot may just have failed to load
+            # (the client skips those); report "removed" only if it stays gone.
+            for doc_id, prev in self.state.items():
+                if doc_id in new:
+                    self._missing.pop(doc_id, None)
+                elif self._missing.get(doc_id, 0) < 1:
+                    self._missing[doc_id] = 1
+                    new[doc_id] = prev
+            for doc_id in list(self._missing):
+                if doc_id not in self.state:
+                    self._missing.pop(doc_id, None)
             changes = diff(self.state, new)
             self.state = new
         for ch in changes:
+            self.seq += 1
+            self.history.append((self.seq, ch))
             for q in list(self._queues):
                 if q.full():
                     q.get_nowait()  # drop the oldest event for a stalled consumer
@@ -257,8 +295,8 @@ class Watcher:
                 logger.info("notification socket unavailable (%s); polling for %.0fs", exc, wait)
                 await self._poll_for(wait)
                 continue
-            failures = 0
             self.mode = "socket"
+            opened = time.time()
             try:
                 async for raw in ws:
                     if _is_sync_event(raw):
@@ -272,8 +310,19 @@ class Watcher:
                     await ws.close()
                 except Exception:
                     pass
-            # Catch anything that synced while we were reconnecting.
-            await self.safe_refresh()
+            if time.time() - opened < HEALTHY_CONNECTION_SECONDS:
+                failures += 1  # dropped right away: back off before reconnecting
+                wait = min(MAX_BACKOFF_SECONDS, 2.0 * 2 ** min(failures, 7))
+                logger.info(
+                    "notification socket closed after %.0fs; waiting %.0fs",
+                    time.time() - opened,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+            else:
+                failures = 0
+            # Catch anything that synced while we were reconnecting (rate-limited).
+            self.request_refresh()
 
     async def _poll_for(self, seconds: float) -> None:
         end = time.time() + seconds

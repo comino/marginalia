@@ -219,3 +219,18 @@ def test_urllib_transport_sends_custom_user_agent(monkeypatch):
     _urllib_http("POST", "https://trmnl.com/x", b"{}", {"Content-Type": "application/json"})
     assert seen["ua"] == USER_AGENT and USER_AGENT.startswith("remarkable-mcp-trmnl/")
     assert seen["ct"] == "application/json"
+
+
+def test_timeouts_and_resets_become_trmnl_errors(monkeypatch):
+    import urllib.request
+
+    from remarkable_mcp.trmnl import client as client_mod
+
+    for exc in (TimeoutError("read timed out"), ConnectionResetError("reset")):
+
+        def boom(*a, _exc=exc, **k):
+            raise _exc
+
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+        with pytest.raises(TrmnlError):
+            client_mod._urllib_http("GET", "https://trmnl.com/api/x", None, {})

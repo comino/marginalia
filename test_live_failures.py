@@ -12,7 +12,11 @@ SYNC = json.dumps({"message": {"attributes": {"event": "SyncComplete", "sourceDe
 _real_sleep = asyncio.sleep
 
 
+REQUESTED_SLEEPS = []
+
+
 async def _fast_sleep(seconds, *a, **k):
+    REQUESTED_SLEEPS.append(seconds)
     await _real_sleep(min(seconds, 0.005))
 
 
@@ -172,3 +176,93 @@ def test_token_renewed_on_401(monkeypatch):
     monkeypatch.setattr("websockets.connect", fake_connect)
     sock = asyncio.run(live.Watcher._default_connect())
     assert isinstance(sock, Socket) and client.user_token == "new" and attempts["n"] == 2
+
+
+def test_last_change_of_a_burst_is_never_lost():
+    """A sync that lands while a refresh is running triggers one more refresh."""
+    import time as _time
+
+    versions = iter(["a", "b", "c", "c", "c", "c", "c", "c"])
+
+    def snap():
+        _time.sleep(0.05)  # a slow metadata read
+        return _doc(next(versions))
+
+    class Timed(Socket):
+        async def __anext__(self):
+            if self.messages:
+                delay, msg = self.messages.pop(0)
+                await _real_sleep(delay)
+                return msg
+            await _real_sleep(3600)
+
+    async def connect():
+        # the second sync arrives while the first refresh is still reading
+        return Timed([(0.0, SYNC), (0.07, SYNC)])
+
+    w = live.Watcher(take_snapshot=snap, connect=connect)
+    run_until(w, lambda: w.state is not None and w.state["a"].pages["a/p.rm"] == "c")
+
+
+def test_immediately_closed_sockets_back_off():
+    connects = {"n": 0}
+
+    async def connect():
+        connects["n"] += 1
+        return Socket([], then="drop")  # accepted, then closed at once
+
+    w = live.Watcher(take_snapshot=lambda: _doc("x"), connect=connect)
+    REQUESTED_SLEEPS.clear()
+    run_until(w, lambda: connects["n"] >= 6)
+    waits = [s for s in REQUESTED_SLEEPS if s >= 2.0]
+    # Each quick drop doubles the wait before reconnecting: 4, 8, 16, ...
+    assert waits[:4] == sorted(waits[:4]) and waits[3] >= 16
+
+
+def test_new_documents_report_page_ids():
+    from remarkable_mcp.workflows.live import diff
+
+    new = {"d": DocState("N", "/N", "", {"d/pg1.rm": "1", "d/pg2.rm": "2"}, False)}
+    [ch] = diff({}, new)
+    assert ch.kind == "new" and ch.pages == ["pg1", "pg2"]
+
+
+def test_a_document_missing_once_is_not_removed():
+    snaps = iter(
+        [
+            _doc("1"),
+            {},  # the client failed to load it this time
+            _doc("1"),
+            {},
+            {},  # really gone
+        ]
+    )
+    w = live.Watcher(take_snapshot=lambda: next(snaps), connect=None)
+
+    async def go():
+        out = []
+        for _ in range(5):
+            out += await w.refresh()
+        return out
+
+    changes = asyncio.run(go())
+    assert [c.kind for c in changes] == ["removed"]
+
+
+def test_changes_since_lets_consumers_resume():
+    n = {"i": 0}
+
+    def snap():
+        n["i"] += 1
+        return _doc(str(n["i"]))
+
+    w = live.Watcher(take_snapshot=snap, connect=None)
+
+    async def go():
+        for _ in range(4):
+            await w.refresh()
+
+    asyncio.run(go())
+    assert w.seq == 3
+    assert [s for s, _ in w.changes_since(1)] == [2, 3]
+    assert w.changes_since(3) == []

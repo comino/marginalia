@@ -84,3 +84,93 @@ def test_prompt_is_substituted():
     )
     argv = pilot.agent_argv()
     assert argv[:2] == ["claude", "-p"] and "remarkable_whats_new" in argv[2]
+
+
+def test_missing_agent_command_does_not_crash(tmp_path, monkeypatch):
+    monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
+    cfg = {
+        **autopilot.DEFAULTS,
+        "agent_command": ["/nonexistent/claude", "{prompt}"],
+        "min_agent_interval_seconds": 0,
+    }
+    pilot = autopilot.Autopilot(cfg)
+    assert asyncio.run(pilot.maybe_run_agent(ATT)) == -2
+    assert pilot.last_agent_signature is None  # not marked handled: retried later
+    assert "could not start" in (tmp_path / "autopilot.log").read_text()
+
+
+def test_hung_agent_is_killed_with_its_children(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
+    pidfile = tmp_path / "child.pid"
+    script = (
+        "import subprocess, sys, time;"
+        f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
+        f"open({str(pidfile)!r}, 'w').write(str(p.pid));"
+        "time.sleep(60)"
+    )
+    cfg = {
+        **autopilot.DEFAULTS,
+        "agent_command": [sys.executable, "-c", script],
+        "agent_timeout_seconds": 1.5,
+        "min_agent_interval_seconds": 0,
+    }
+    pilot = autopilot.Autopilot(cfg)
+    assert asyncio.run(pilot.maybe_run_agent(ATT)) == -1
+    child = int(pidfile.read_text())
+    import time as _t
+
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        _t.sleep(0.1)
+    else:
+        raise AssertionError("grandchild survived the timeout")
+
+
+def test_trmnl_state_survives_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
+    pushed = []
+    monkeypatch.setattr(
+        "remarkable_mcp.trmnl.tools.trmnl_set_slots", lambda slots: pushed.append(slots) or "{}"
+    )
+    monkeypatch.setattr("remarkable_mcp.trmnl.tools.configured", lambda: True)
+    first = autopilot.Autopilot(dict(autopilot.DEFAULTS))
+    assert first.mirror(ATT) is not None
+    restarted = autopilot.Autopilot(dict(autopilot.DEFAULTS))  # e.g. systemd restart
+    assert restarted.mirror(ATT) is None  # same text already on the display
+    assert restarted.mirror(QUIET) is None and restarted.mirror_due is not None  # scheduled
+    assert len(pushed) == 1
+
+
+def test_check_never_raises(monkeypatch, tmp_path):
+    monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
+    pilot = autopilot.Autopilot(dict(autopilot.DEFAULTS))
+
+    async def broken():
+        raise RuntimeError("state unreadable")
+
+    monkeypatch.setattr(pilot, "overview", broken)
+    assert "_error" in asyncio.run(pilot.check())
+
+    async def fine():
+        return ATT
+
+    def mirror_boom(ov):
+        raise TimeoutError("TRMNL read timed out")
+
+    monkeypatch.setattr(pilot, "overview", fine)
+    monkeypatch.setattr(pilot, "mirror", mirror_boom)
+    assert asyncio.run(pilot.check()) == ATT
+
+
+def test_unit_file_is_sane():
+    from pathlib import Path
+
+    unit = (Path(__file__).parent / "contrib" / "remarkable-autopilot.service").read_text()
+    assert "Environment=PATH=%h/.local/bin" in unit
+    assert "StartLimitBurst" in unit and "Restart=on-failure" in unit
+    assert "@main" not in unit  # pinned, not tracking a branch
