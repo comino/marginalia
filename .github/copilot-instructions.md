@@ -119,11 +119,11 @@ remarkable-mcp/
 │   ├── local_dir.py       # Desktop cache client
 │   ├── extract.py         # Extraction and rendering
 │   └── app_canvas.py      # MCP Apps canvas
-├── test_server.py
-├── test_mcp_v2.py        # Modern/legacy protocol compatibility
-├── test_page_mapping.py
-├── test_local_dir.py
-├── test_integration.py
+├── tests/                 # pytest suite (conftest.py isolates all state)
+│   ├── test_server.py
+│   ├── test_mcp_v2.py     # Modern/legacy protocol compatibility
+│   ├── test_workflows.py  # Workflow layer; FakeCloud + synthetic ink helpers
+│   └── ...
 ├── docs/
 ├── smoke/
 ├── server.json
@@ -223,7 +223,7 @@ async def test_with_mock(mock_get_rmapi):
 ### Adding a New Tool
 
 1. Add the tool function in `remarkable_mcp/tools.py` with proper docstring and annotations
-2. Add tests in `test_server.py`
+2. Add tests in `tests/test_server.py`
 3. Update README.md tools table
 4. Update README.md examples if relevant
 5. Run tests: `uv run pytest -v`

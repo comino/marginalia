@@ -190,6 +190,7 @@ remarkable_mcp/
   trmnl/         TRMNL display client + tools
   *.py           core server, transports (cloud, SSH, USB web, local dir), extraction
 docs/            workflows.md (workflow layer) · core.md (core tools) · …
+tests/           pytest suite (offline; synthetic ink, fake cloud)
 contrib/         systemd unit for the autopilot
 ```
 

@@ -20,7 +20,7 @@ from test_workflows import (  # noqa: F401
     cloud,
 )
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 # Names that look like tools but are not registered in cloud mode / are config keys.
 NOT_TOOLS = {
     "remarkable_mcp",  # the Python package

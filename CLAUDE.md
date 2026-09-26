@@ -11,7 +11,7 @@ documents every workflow tool; `docs/core.md` the core tools.
 - `uv sync --all-extras && uv run pytest -q` — ~1080 offline tests, ~60 s. Gate
   commits on pytest's exit code (not on `| tail`).
 - `uv run ruff check . && uv run ruff format --check .` — line length 100;
-  long lines are allowed only in `test_*.py` and the ported `trmnl/` code.
+  long lines are allowed only in `tests/` and the ported `trmnl/` code.
 - Python ≥ 3.10 (CI matrix 3.10–3.12): no 3.12-only syntax (nested same-quote
   f-strings etc.).
 - The package import name stays `remarkable_mcp` and the MCP server/tool names
@@ -39,14 +39,14 @@ documents every workflow tool; `docs/core.md` the core tools.
   never hold it across network calls (OCR).
 - "Seen" tracking is per stroke (`Mark.seen_keys`), keyed by PDF page / tablet
   page id — so a note added next to an already collected mark comes back.
-- Tests never touch real state: `conftest.py` points `REMARKABLE_WORKFLOW_STATE`,
-  `TRMNL_STATE_DIR` and `REMARKABLE_AUTOPILOT_CONFIG` at temp dirs. Transport is
-  swapped in one place (`workflows.cloud`, see `FakeCloud` in test_workflows.py).
+- Tests live in `tests/` and never touch real state: `tests/conftest.py` points
+  `REMARKABLE_WORKFLOW_STATE`, `TRMNL_STATE_DIR` and `REMARKABLE_AUTOPILOT_CONFIG` at temp dirs. Transport is
+  swapped in one place (`workflows.cloud`, see `FakeCloud` in tests/test_workflows.py).
 - Secrets: the reMarkable token lives in `~/.rmapi`; the TRMNL plugin UUID (a
   write credential) in `~/.config/trmnl/config.json`. Never print, log or put
   them in tests/fixtures; `trmnl_status` masks the UUID.
 - Real user documents (the maintainer's annotated PDFs) must not become
-  fixtures in this public repo; synthesise ink instead (`test_workflows.py`
+  fixtures in this public repo; synthesise ink instead (`tests/test_workflows.py`
   helpers write real v6 `.rm` files).
 
 ## Deploying on this machine

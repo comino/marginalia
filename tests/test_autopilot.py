@@ -179,7 +179,7 @@ def test_check_never_raises(monkeypatch, tmp_path):
 def test_unit_file_is_sane():
     from pathlib import Path
 
-    unit = (Path(__file__).parent / "contrib" / "remarkable-autopilot.service").read_text()
+    unit = (Path(__file__).parent.parent / "contrib" / "remarkable-autopilot.service").read_text()
     assert "Environment=PATH=%h/.local/bin" in unit
     assert "StartLimitBurst" in unit and "Restart=on-failure" in unit
     assert "@main" not in unit  # pinned, not tracking a branch

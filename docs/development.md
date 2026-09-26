@@ -39,11 +39,11 @@ remarkable-mcp/
 │   ├── extract.py          # Text and image extraction
 │   ├── markdown_pdf.py     # Markdown-to-PDF rendering
 │   └── app_canvas.py       # MCP Apps canvas
-├── test_server.py
-├── test_mcp_v2.py          # Modern/legacy protocol compatibility tests
-├── test_page_mapping.py
-├── test_local_dir.py
-├── test_integration.py
+├── tests/                  # pytest suite (conftest.py isolates all state)
+│   ├── test_server.py
+│   ├── test_mcp_v2.py      # Modern/legacy protocol compatibility tests
+│   ├── test_workflows.py   # Workflow layer; FakeCloud + synthetic ink helpers
+│   └── ...
 ├── smoke/
 ├── docs/
 ├── server.json
@@ -102,7 +102,7 @@ Branch protection is enabled on `main` - all changes must go through pull reques
 
 1. Add the tool function in `remarkable_mcp/tools.py` with proper docstring and annotations
 2. Create unique `ToolAnnotations` with a descriptive title
-3. Add tests in `test_server.py`
+3. Add tests in `tests/test_server.py`
 4. Update the tools tables in README.md (overview) and docs/core.md or docs/workflows.md
 5. Update `docs/tools.md` with detailed documentation
 6. Run tests: `uv run pytest -v`

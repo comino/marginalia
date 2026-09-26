@@ -90,7 +90,7 @@ def _labelled_mermaids():
 def test_mermaid_output_parses_with_real_parser():
     diagrams = _labelled_mermaids()
     res = subprocess.run(
-        ["node", str(Path(__file__).parent / "tests" / "mermaid_parse.mjs"), _mermaid_dir()],
+        ["node", str(Path(__file__).parent / "mermaid_parse.mjs"), _mermaid_dir()],
         input=json.dumps(diagrams),
         capture_output=True,
         text=True,
