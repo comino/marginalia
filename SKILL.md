@@ -95,6 +95,7 @@ For handwriting OCR, add a Google Vision API key:
 | `remarkable_ask` / `remarkable_form_*` | Questions and forms answered with ticks on the tablet |
 | `remarkable_inbox*` | Handwritten requests in an "Agent Inbox" become agent tasks |
 | `remarkable_sketch` / `remarkable_regions` | Hand-drawn diagrams → graph + Mermaid; page ink → regions |
+| `remarkable_clip` / `remarkable_reading_*` | Web articles → tablet; highlights → quotes with deep links |
 
 ## Workflow
 

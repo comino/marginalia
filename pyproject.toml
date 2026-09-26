@@ -41,6 +41,9 @@ dev = [
 ocr = [
     "google-cloud-vision>=3.0.0",
 ]
+web = [
+    "trafilatura>=2.0.0",
+]
 
 [project.scripts]
 remarkable-mcp = "remarkable_mcp.cli:main"

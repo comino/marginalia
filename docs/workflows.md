@@ -20,6 +20,9 @@ happen in the server, so a small model can run the workflows with a few calls.
 | `remarkable_inbox_done` | Mark requests done and optionally reply with a PDF on the tablet |
 | `remarkable_sketch` | Hand-drawn boxes, circles, diamonds and arrows → graph + Mermaid + clean SVG |
 | `remarkable_regions` | Split a page's ink into writing and drawing regions with crops |
+| `remarkable_clip` | Send a web article to the tablet as a clean, annotatable PDF (write mode, cloud) |
+| `remarkable_reading_notes` | Highlights and margin notes from clipped articles → quotes with deep links |
+| `remarkable_reading_list` | Clipped articles and which have new marks |
 
 ## Pen review round-trip
 
@@ -194,6 +197,34 @@ Recognition is purely geometric:
 attaches it as a PNG together with the label crops. `remarkable_regions` groups
 a page's ink into separate regions, labels each `writing` or `drawing`, and
 gives crops a small vision model can read one at a time.
+
+## Reading queue
+
+```python
+remarkable_clip("https://example.com/essay")      # article -> /Reading as a clean PDF
+remarkable_reading_notes()                         # every article with new marks
+```
+
+The article's main text is extracted (without navigation, ads or comments) and
+rendered in the review layout, with numbered paragraphs and a note margin.
+When you highlight, underline or circle something, or bracket lines with a
+margin bar, it comes back as a quote. The quote includes the handwritten note
+next to it and a link that jumps to the exact passage in the original article
+(a `#:~:text=` URL text fragment). Each article also comes with a Markdown
+digest you can paste into your notes:
+
+```markdown
+## Local-first ideas
+https://example.com/lf
+
+> Users own their data
+> — [¶3](https://example.com/lf#:~:text=Users%20own%20their%20data)
+```
+
+Extraction uses [trafilatura](https://trafilatura.readthedocs.io/) when the
+`web` extra is installed (`remarkable-mcp[web]`). Without it, a BeautifulSoup
+fallback keeps the headings, paragraphs, lists, quotes and code from the main
+content element.
 
 ## Annotations on any document
 
