@@ -1,0 +1,17 @@
+[Unit]
+Description=reMarkable autopilot (live tablet watcher, TRMNL mirror, optional agent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# uvx fetches the fork; adjust the ref or use a local checkout path.
+ExecStart=%h/.local/bin/uvx --from "remarkable-mcp[web] @ git+https://github.com/comino/remarkable-mcp@main" remarkable-autopilot
+Restart=on-failure
+RestartSec=30
+# Keep it light on this small box.
+Nice=10
+MemoryMax=400M
+
+[Install]
+WantedBy=default.target

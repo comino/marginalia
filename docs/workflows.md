@@ -24,6 +24,19 @@ happen in the server, so a small model can run the workflows with a few calls.
 | `remarkable_clip` | Send a web article to the tablet as a clean, annotatable PDF (write mode, cloud) |
 | `remarkable_reading_notes` | Highlights and margin notes from clipped articles → quotes with deep links |
 | `remarkable_reading_list` | Clipped articles and which have new marks |
+| `remarkable_clarify` | Ask about an unclear mark; the question page shows the user their own mark |
+| `remarkable_triage_send` | Tick sheet: many items (issues, PRs, mails), one option per row |
+| `remarkable_code_review_send` / `_collect` | PR or git diff on paper → GitHub review comments on path:line + verdict |
+| `remarkable_latex_review_send` / `_collect` | Compiled LaTeX on paper → edits at .tex file:line via SyncTeX |
+| `remarkable_table` | Hand-drawn table → Markdown + CSV |
+| `remarkable_wireframe` | Paper wireframe → HTML prototype |
+| `remarkable_math` | Handwritten math → LaTeX |
+| `remarkable_ink_digest` | What you wrote since yesterday, page by page |
+| `remarkable_live_watch` / `_status` | Follow the tablet near-live: wait for strokes, get the changed pages analysed |
+| `trmnl_*` (11 tools) | TRMNL e-ink display (only when a TRMNL config exists on the machine) |
+
+A separate program, `remarkable-autopilot`, runs these checks unattended; see
+[Autopilot](#autopilot).
 
 ## Start here: `remarkable_whats_new`
 
@@ -244,6 +257,149 @@ Extraction uses [trafilatura](https://trafilatura.readthedocs.io/) when the
 `web` extra is installed (`remarkable-mcp[web]`). Without it, a BeautifulSoup
 fallback keeps the headings, paragraphs, lists, quotes and code from the main
 content element.
+
+## Live: follow the tablet as you write
+
+The reMarkable sync service pushes a `SyncComplete` notification over a
+websocket (`wss://…/notifications/ws/json/1`) every time the tablet syncs.
+While you write, that happens every few seconds. The watcher keeps a snapshot
+of every document's per-page stroke-file hashes, taken from metadata only, and
+compares it against a fresh one after each notification. The result is a
+stream of events: *document X, pages Y got new ink*.
+
+```python
+remarkable_live_watch("Whiteboard")    # blocks until you draw, then:
+# {"status": "changed", "changes": [{"document": "Whiteboard", "changed_page_ids": [...]}],
+#  "pages": [{"page": 1, "diagram": {"nodes": [...], "edges": [...], "mermaid": "..."}}]}
+```
+
+- Calling it in a loop lets an agent follow a sketching session.
+- On PDFs the changed pages come back as annotations; on notebooks, as a
+  diagram.
+- `include_images` (on by default) attaches a render of each changed page.
+- Refreshes are coalesced, because the sync API rate-limits at about 30
+  requests per short window.
+- Expired tokens are renewed when the socket rejects the connection.
+- Without a socket (non-cloud transports), the watcher polls every 60 s.
+
+reMarkable's own Screen Share is WebRTC through an undocumented broker, so it
+isn't used here. Sync-level updates are robust and carry strokes rather than
+pixels.
+
+## Autopilot
+
+`remarkable-autopilot` is a small daemon for this machine. It runs the same
+watcher. Once your writing settles, it checks every tracked workflow (the
+`remarkable_whats_new` logic) and then does two things:
+
+- **TRMNL mirror.** It writes a short German status line into one TRMNL slot
+  (default slot 5), only when the text changes and at most every 15 minutes,
+  so the 12-pushes-per-hour quota stays available for other agents.
+- **Agent run (off by default).** It starts a headless agent with the
+  `tablet_check_in` prompt, once per new state.
+
+Configuration lives in `~/.config/remarkable-mcp/autopilot.json`:
+
+```json
+{
+  "agent_command": ["claude", "-p", "{prompt}", "--allowedTools", "mcp__remarkable"],
+  "debounce_seconds": 60,
+  "min_agent_interval_seconds": 300,
+  "trmnl_slot": 5,
+  "trmnl_min_interval_seconds": 900
+}
+```
+
+Use `remarkable-autopilot --once` for a single dry-run check, `--dry-run` to
+run without pushing anything or starting agents. Agent output is appended to
+`~/.local/state/remarkable-mcp/autopilot.log`. A systemd user unit is in
+`contrib/remarkable-autopilot.service`.
+
+## Clarify on paper
+
+When a request is ambiguous, `remarkable_clarify(request_id, question,
+options, review=…)` puts a page on the tablet with a crop of the mark and the
+printed text under it, the question as tick boxes, and room for a comment.
+Read the answer with `remarkable_form_read`. The same `image` field type is
+available in `remarkable_form_send` (`{"type": "image", "path": …}`).
+
+## Triage sheets
+
+`remarkable_triage_send(title, items, options)` renders compact rows: an item
+title and subtitle on the left, the option boxes in columns on the right. Each
+row reads back as a choice field, so the answers come from
+`remarkable_form_read`. Handwriting next to a row comes back as a remark with
+`near` set to that row's id. The `triage_on_paper` prompt drives the whole
+loop against Linear or GitHub.
+
+## Code review on paper
+
+```python
+remarkable_code_review_send(pr="42", repo="comino/remarkable-mcp")   # gh pr diff
+remarkable_code_review_send(repo_path="/home/me/app", base="main")   # local range
+remarkable_code_review_collect("<id>")
+```
+
+The diff is rendered like this:
+
+- line numbers from the new side;
+- added lines shaded, removed lines grey;
+- a note margin;
+- Approve / Request changes / Comment boxes at the end.
+
+Every rendered row knows its `path`, `side` and `line`. A strike, circle or
+underline on code, or a note in the margin, becomes a comment on that line.
+The result includes a `github` object (`event`, `body`, `comments`) in the
+pull-request review API format, ready for
+`gh api repos/O/R/pulls/N/reviews --input …`. Posting it is left to the agent.
+
+## LaTeX review via SyncTeX
+
+Compile with SyncTeX (`latexmk -pdf -synctex=1`), then:
+
+```python
+remarkable_latex_review_send("/home/me/thesis/thesis.pdf", title="Thesis draft 3")
+remarkable_latex_review_collect("<id>")
+# [{"kind": "strikethrough", "intent": "delete", "target": "five random seeds.",
+#   "file": "chapters/method.tex", "line": 4, "source": "Every configuration is ..."}]
+```
+
+The PDF goes to the tablet unchanged. The PDF and its SyncTeX data are
+snapshotted, so marks keep mapping correctly after you edit and recompile.
+Each mark is resolved with `synctex edit`, which follows `\input` and
+`\include` into the right file, and the line is then refined using the
+marked words. A margin note is resolved at the word next to it on its line.
+Line starts often map to the paragraph's first source line, not to the
+sentence the note is about.
+
+## Tables, wireframes, math
+
+- `remarkable_table` finds ruled rows and columns; a box around the table also
+  counts. Handwriting is transcribed cell by cell and returned as Markdown and
+  CSV.
+- `remarkable_wireframe` maps shapes to UI roles: a box with an X is an image,
+  a small labelled box is a button, a wide flat box is an input, a box holding
+  others is a container, a circle is a round button, and loose handwriting is
+  text. It returns an HTML prototype that keeps the sketch's layout, plus an
+  element outline.
+- `remarkable_math` splits the ink into blocks and returns LaTeX per block. It
+  uses MyScript's math recogniser when configured, otherwise Claude with a
+  LaTeX prompt.
+
+## Daily ink digest
+
+`remarkable_ink_digest(since_hours=24)` lists the documents modified in that
+window and the pages whose stroke hashes changed since the previous digest.
+For each page it returns the transcribed text blocks and a count of drawings.
+The `daily_ink_digest` prompt summarises the result and suggests where each
+note belongs.
+
+## More prompts
+
+`tablet_check_in`, `review_draft`, `ask_on_tablet`, `triage_on_paper`,
+`meeting_pack` (agenda with note fields, then actions afterwards),
+`research_on_paper` (`#research` inbox entries answered with a cited brief in
+`/Reading`) and `daily_ink_digest`.
 
 ## Annotations on any document
 
