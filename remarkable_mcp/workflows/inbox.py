@@ -16,6 +16,7 @@ instead of creating a new one.
 from __future__ import annotations
 
 import hashlib
+import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -83,16 +84,73 @@ class Entry:
         return "e" + h.hexdigest()[:8]
 
 
-def _is_cancel_stroke(s: Stroke, line_h: float) -> bool:
-    """A long, flat, straight-ish stroke (waves and tremor allowed)."""
+def _thickness(points) -> float:
+    """Spread of the ink across its main direction (least-squares line).
+
+    A (wavy) strike is a thin band; a handwritten word is as thick as its
+    x-height, even though it also runs from left to right.
+    """
+    n = len(points)
+    mx = sum(p[0] for p in points) / n
+    my = sum(p[1] for p in points) / n
+    sxx = sum((p[0] - mx) ** 2 for p in points)
+    syy = sum((p[1] - my) ** 2 for p in points)
+    sxy = sum((p[0] - mx) * (p[1] - my) for p in points)
+    theta = 0.5 * math.atan2(2 * sxy, sxx - syy)
+    nx, ny = -math.sin(theta), math.cos(theta)
+    d = [(p[0] - mx) * nx + (p[1] - my) * ny for p in points]
+    return max(d) - min(d)
+
+
+def _is_straight_pull(s: Stroke, line_h: float, min_len: float, strict: bool = False) -> bool:
+    """A straight-ish pull of the pen (tremor, waves and a slope up to ~15 deg ok)."""
     f = stroke_features(s)
-    flat = f.h < max(0.6 * line_h, 4.0) and f.x_reversals <= 2
+    (ax, ay), (bx, by) = s.points[0], s.points[-1]
+    slope = abs(math.atan2(by - ay, (bx - ax) or 1e-6))
+    slope = min(slope, math.pi - slope)
+    # Pen waves keep going forward; handwriting loops back (x reversals).
+    band = 0.9 if f.x_reversals == 0 and not strict else 0.6
+    thin = _thickness(s.points) < max(band * line_h, 3.0)
     return (
-        (f.smooth_straightness > 0.85 or flat)
-        and f.sagitta < 0.6 * line_h
-        and f.w > 2.5 * line_h
-        and f.h < 1.5 * line_h
+        thin
+        and f.x_reversals <= 2
+        and slope < math.radians(15)
+        and math.dist(s.points[0], s.points[-1]) > min_len
     )
+
+
+def _is_cancel_stroke(s: Stroke, line_h: float) -> bool:
+    return _is_straight_pull(s, line_h, 2.5 * line_h)
+
+
+def _join_pulls(strokes: Sequence[Stroke], line_h: float) -> List[Stroke]:
+    """Strikes drawn in several pulls along one line become one cancel stroke."""
+    # Short pieces look like letter strokes, so only clearly thin pulls join.
+    pulls = [s for s in strokes if _is_straight_pull(s, line_h, 0.8 * line_h, strict=True)]
+    pulls.sort(key=lambda s: s.bbox[0])
+    joined: List[Stroke] = []
+    used: set = set()
+    for i, a in enumerate(pulls):
+        if id(a) in used:
+            continue
+        chain = [a]
+        for b in pulls[i + 1 :]:
+            if id(b) in used:
+                continue
+            last = chain[-1]
+            ya = statistics.median(p[1] for p in last.points)
+            yb = statistics.median(p[1] for p in b.points)
+            gap = b.bbox[0] - last.bbox[2]  # the next pull starts where the last ended
+            if abs(ya - yb) < 0.5 * line_h and -1.5 * line_h < gap < 1.2 * line_h:
+                chain.append(b)
+        if len(chain) > 1:
+            pts = [p for st in chain for p in st.points]
+            combo = Stroke(index=a.index, points=pts, tool=a.tool, color=a.color, width=a.width)
+            if combo.bbox[2] - combo.bbox[0] > 2.5 * line_h:
+                used.update(id(st) for st in chain)
+                combo.parts = chain  # type: ignore[attr-defined]
+                joined.append(combo)
+    return joined
 
 
 def _lines(strokes: Sequence[Stroke]) -> List[List[Stroke]]:
@@ -120,13 +178,40 @@ def segment_entries(page: PageInk) -> List[Entry]:
         return []
     heights = [s.bbox[3] - s.bbox[1] for s in strokes if s.bbox[3] - s.bbox[1] > 1]
     line_h = statistics.median(heights) if heights else 8.0
-    cancels = [s for s in strokes if _is_cancel_stroke(s, line_h)]
-    writing = [s for s in strokes if s not in cancels]
-    lines = _lines(writing)
-    if not lines:
+    joined = _join_pulls(strokes, line_h)
+    in_joined = {id(p) for j in joined for p in getattr(j, "parts", [])}
+    cancels = joined + [
+        s for s in strokes if id(s) not in in_joined and _is_cancel_stroke(s, line_h)
+    ]
+    writing = [s for s in strokes if s not in cancels and id(s) not in in_joined]
+    pitch = LINE_PITCH if page.pdf_page is not None else max(2.2 * line_h, 18.0)
+    groups = _group_lines(_lines(writing), pitch)
+    # A strike-shaped stroke that runs through no written line is writing
+    # (a dash, an un-looped word, a rule under a heading) - keep its ink.
+    stray = [c for c in cancels if not any(_crosses_a_line(c, g) for g in groups)]
+    stray_ids = {id(c) for c in stray}
+    if stray:
+        cancels = [c for c in cancels if id(c) not in stray_ids]
+        writing += [part for c in stray for part in getattr(c, "parts", [c])]
+        groups = _group_lines(_lines(writing), pitch)
+    if not groups:
         return []
 
-    pitch = LINE_PITCH if page.pdf_page is not None else max(2.2 * line_h, 18.0)
+    entries: List[Entry] = []
+    for group in groups:
+        entry = Entry(page=page.page, strokes=[s for line in group for s in line])
+        entry.fingerprints = {s.fingerprint() for s in entry.strokes}
+        for c in cancels:
+            if _crosses_a_line(c, group):
+                entry.cancelled = True
+                for part in getattr(c, "parts", [c]):
+                    entry.fingerprints.add(part.fingerprint())
+        entries.append(entry)
+    return entries
+
+
+def _group_lines(lines: List[List[Stroke]], pitch: float) -> List[List[List[Stroke]]]:
+    """Consecutive lines with no blank rule between them form one entry."""
     groups: List[List[List[Stroke]]] = []  # entries -> lines -> strokes
     last_bottom: Optional[float] = None
     for line in lines:
@@ -136,20 +221,10 @@ def segment_entries(page: PageInk) -> List[Entry]:
         else:
             groups.append([line])
         last_bottom = max(s.bbox[3] for s in line)
-
-    entries: List[Entry] = []
-    for group in groups:
-        entry = Entry(page=page.page, strokes=[s for line in group for s in line])
-        entry.fingerprints = {s.fingerprint() for s in entry.strokes}
-        for c in cancels:
-            if _crosses_a_line(c, group, entry.rect):
-                entry.cancelled = True
-                entry.fingerprints.add(c.fingerprint())
-        entries.append(entry)
-    return entries
+    return groups
 
 
-def _crosses_a_line(cancel: Stroke, lines: Sequence[Sequence[Stroke]], rect: Rect) -> bool:
+def _crosses_a_line(cancel: Stroke, lines: Sequence[Sequence[Stroke]]) -> bool:
     """A strike runs through the body of a written line; an underline does not.
 
     The body is where most of the line's ink is (25th-75th percentile of its

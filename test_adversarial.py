@@ -22,6 +22,10 @@ from test_workflows import DRAFT, _doc_zip, _phrase_rects
 RNG = random.Random(7)
 
 
+def linspace(a, b, n):
+    return [a + (b - a) * i / (n - 1) for i in range(n)]
+
+
 @pytest.fixture(scope="module")
 def page():
     r = render_review_pdf(DRAFT)
@@ -379,6 +383,43 @@ def test_inbox_wavy_strike_cancels(seed):
     x1 = max(p[0] for s in req for p in s)
     strike = line(36, x1 + 4, _rule(0) - 4, n=60, wave=1.0, period=8, rng=rng)
     assert _inbox_entries(req + [strike])[0][1] is True
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_inbox_strong_wavy_strike_cancels(seed):
+    # amplitude up to 2 pt with a short period: the band is thick for a
+    # strike, but the pen never goes backwards like handwriting does
+    rng = random.Random(300 + seed)
+    req = _request(40, _rule(0) - 1, rng, rng.randint(3, 5))
+    x1 = max(p[0] for s in req for p in s)
+    amp, per = rng.uniform(1.5, 2.0), rng.uniform(1.2, 2.0)
+    strike = [(x, _rule(0) - 5 + amp * math.sin(x / per)) for x in linspace(36, x1 + 4, 120)]
+    entries = _inbox_entries(req + [strike])
+    assert len(entries) == 1 and entries[0][1] is True
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_inbox_strike_in_two_pulls_cancels(seed):
+    rng = random.Random(400 + seed)
+    req = _request(40, _rule(0) - 1, rng, rng.randint(4, 5))
+    # an un-looped word (no x reversals) must not be chained into the strike
+    xw = max(p[0] for s in req for p in s) + 6
+    req.append([(xw + 30 * t, _rule(0) - 4 - 3 * math.sin(3 * t)) for t in linspace(0, 1, 40)])
+    x1 = xw + 32
+    y, m = _rule(0) - 5, (36 + x1) / 2
+    pulls = [line(36, m, y, n=30, rng=rng), line(m - 2, x1 + 4, y + 0.5, n=30, rng=rng)]
+    entries = _inbox_entries(req + pulls)
+    assert len(entries) == 1 and entries[0][1] is True
+    assert entries[0][0] == len(req)  # no handwriting is swallowed by the strike
+
+
+def test_inbox_two_pulls_on_different_lines_do_not_join():
+    rng = random.Random(7)
+    a = _request(40, _rule(0) - 1, rng, 2)
+    b = _request(40, _rule(2) - 1, rng, 2)
+    p1 = line(36, 58, _rule(0) - 5, n=30, rng=rng)  # each too short to cancel alone
+    p2 = line(58, 80, _rule(2) - 5, n=30, rng=rng)
+    assert all(not c for _, c in _inbox_entries(a + b + [p1, p2]))
 
 
 # 11: sketch shapes
