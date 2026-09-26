@@ -90,9 +90,9 @@ def _note_payloads(requests, ink, include_images: bool):
     )
     for (mark_id, _, _), (text, used) in zip(crops, results):
         if text is not None:
-            notes[mark_id] = (text, f"transcribed:{used}")
+            notes[mark_id] = (text, "transcribed", used)
         else:
-            notes[mark_id] = (None, "image" if include_images else "not_transcribed")
+            notes[mark_id] = (None, "not_transcribed", None)
     return notes, images
 
 
@@ -109,8 +109,11 @@ def _requests_by_id(record: Optional[dict]) -> dict:
 def _shape(requests, notes) -> List[dict]:
     out = []
     for req in requests:
-        text, status = notes.get(req.mark.id, (None, "none"))
-        out.append(req.to_dict(text, status))
+        text, status, engine = notes.get(req.mark.id, (None, "none", None))
+        item = req.to_dict(text, status)
+        if engine:
+            item["note_engine"] = engine
+        out.append(item)
     return out
 
 
@@ -140,7 +143,7 @@ async def remarkable_review_send(
     requests.
 
     First call for a draft creates version 1. Calling again with the same
-    review (or the same title) sends the next version: changed paragraphs get
+    source_path (or with review=<id>) sends the next version: changed paragraphs get
     a black bar in the left margin, and `responses` adds a closing page that
     answers the previous round's comments.
 
@@ -215,14 +218,14 @@ async def remarkable_review_send(
         for r in responses:
             req = known.get(r.get("id"), {})
             quote = req.get("note") or req.get("target") or ""
-            label = r.get("id", "")
+            label = str(r.get("id") or "")
             if req.get("paragraph"):
                 label = f"¶{req['paragraph']} {req.get('intent', '')}".strip()
             quoted.append(
                 {
                     "id": label,
-                    "status": r.get("status", ""),
-                    "reply": (f"“{quote[:80]}” → " if quote else "") + r.get("reply", ""),
+                    "status": str(r.get("status") or ""),
+                    "reply": (f"“{quote[:80]}” → " if quote else "") + str(r.get("reply") or ""),
                 }
             )
 
@@ -409,11 +412,12 @@ async def remarkable_review_collect(
         for item in shaped:
             known[item["id"]] = {**item, "version": entry["version"]}
         current.pop("last_requests", None)
-        current["last_collect"] = {
-            "version": entry["version"],
-            "at": now_iso(),
-            "ink": cloud.ink_token(doc),
-        }
+        if mark_seen:  # a peek must not make unseen marks look collected
+            current["last_collect"] = {
+                "version": entry["version"],
+                "at": now_iso(),
+                "ink": cloud.ink_token(doc),
+            }
         return current
 
     record = store.update(record["slug"], merge) or record
@@ -452,7 +456,9 @@ async def remarkable_review_list() -> str:
     <instructions>
     Shows every draft sent with remarkable_review_send: its versions, where the
     latest document sits on the tablet, and a status:
-    - "done": the reviewer moved it to a folder named Reviewed / Done
+    - "done": the reviewer moved it to a done folder (Reviewed, Done, Erledigt,
+      Answered, Beantwortet) and there is ink not collected yet
+    - "collected": in a done folder, everything collected
     - "annotated": the document changed since it was sent or last collected
     - "waiting": untouched since it was sent or collected
     - "missing": the document is gone from the tablet

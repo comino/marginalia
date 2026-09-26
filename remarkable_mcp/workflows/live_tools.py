@@ -9,7 +9,7 @@ import time
 import zipfile
 from dataclasses import replace
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from mcp.types import ToolAnnotations
 
@@ -59,7 +59,7 @@ def _analyse(doc_id: str, page_ids: List[str], mode: str, include_images: bool):
             if use == "annotations":
                 reqs = collect_requests(type(ink)([page], ink.pdf_bytes, ink.page_count))
                 item["marks"] = [r.to_dict(None, "none") for r in reqs]
-            if use in ("sketch", "regions"):
+            if use == "sketch":
                 d = recognise(page.strokes)
                 item["diagram"] = d if d.is_diagram else None  # labels read after the lock
 
@@ -89,7 +89,7 @@ async def remarkable_live_watch(
     document: Optional[str] = None,
     timeout: int = 90,
     settle: float = 4.0,
-    analyse: str = "auto",
+    analyse: Literal["auto", "annotations", "sketch", "none"] = "auto",
     include_images: bool = True,
     since: Optional[int] = None,
 ):
@@ -103,6 +103,8 @@ async def remarkable_live_watch(
     - "annotations" on PDFs (strikes, circles, notes anchored to text),
     - "sketch" on notebooks (diagram nodes/edges + Mermaid when it is a diagram),
     - a render of each changed page (include_images=true).
+    Pages are analysed when a single document changed; for several documents
+    only the list of changes is returned (call again with document=...).
     Every answer carries a "cursor". Pass it back as `since` on the next call
     and nothing that happened in between is missed - that is how to follow a
     live sketching session. Returns status "no_change" after `timeout`
@@ -111,7 +113,7 @@ async def remarkable_live_watch(
     <parameters>
     - document: Name, path or id to follow (default: any document).
     - timeout: Seconds to wait for a change (default 90, max 600).
-    - settle: Seconds of quiet after a change before answering (default 4).
+    - settle: Seconds of quiet after a change before answering (default 4, 0.5-30).
     - analyse: "auto" | "annotations" | "sketch" | "none".
     - include_images: Attach renders of the changed pages (default true).
     - since: Cursor from the previous call (default: only changes from now on).
@@ -122,6 +124,7 @@ async def remarkable_live_watch(
     </examples>
     """
     timeout = max(5, min(int(timeout), 600))
+    settle = max(0.5, min(float(settle), 30.0))
     try:
         watcher = await live.shared_watcher()
     except Exception as exc:
@@ -226,7 +229,16 @@ async def remarkable_live_status() -> str:
     )
 
 
+_STATUS = ToolAnnotations(
+    title="Live Stream Status",
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+
+
 def register(mcp, write_enabled: bool) -> None:
     del write_enabled
     mcp.tool(annotations=_READ)(remarkable_live_watch)
-    mcp.tool(annotations=_READ)(remarkable_live_status)
+    mcp.tool(annotations=_STATUS)(remarkable_live_status)

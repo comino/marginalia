@@ -20,6 +20,8 @@ _READ = ToolAnnotations(
 )
 
 _NEXT_STEP = {
+    "code-reviews": "remarkable_code_review_collect('{id}')",
+    "latex-reviews": "remarkable_latex_review_collect('{id}')",
     "reviews": "remarkable_review_collect('{id}')",
     "forms": "remarkable_form_read('{id}')",
     "reading": "remarkable_reading_notes('{id}')",
@@ -27,31 +29,37 @@ _NEXT_STEP = {
 }
 
 
+_KIND_LABEL = {
+    "reviews": "review",
+    "forms": "form",
+    "reading": "article",
+    "code-reviews": "code_review",
+    "latex-reviews": "latex_review",
+}
+
+
 def _baseline(kind: str, rec: dict):
+    """(document id, ink baseline, display name) for one tracked record."""
     if kind == "reviews":
+        if not rec.get("versions"):
+            return None, None, rec.get("title")
         latest = rec["versions"][-1]
         return (
             latest["doc_id"],
             (rec.get("last_collect") or {}).get("ink") or latest.get("ink_at_send"),
             latest["doc_name"],
         )
-    if kind == "forms":
+    if kind == "inbox":
+        # any ink change since the last scan (a never-scanned inbox counts from empty)
         return (
-            rec["doc_id"],
-            (rec.get("last_read") or {}).get("ink") or rec.get("ink_at_send"),
-            rec["title"],
+            rec.get("doc_id"),
+            (rec.get("last_scan") or {}).get("ink") or cloud.EMPTY_INK,
+            rec.get("document"),
         )
-    if kind == "reading":
-        return (
-            rec["doc_id"],
-            (rec.get("last_read") or {}).get("ink") or rec.get("ink_at_send"),
-            rec["title"],
-        )
-    # inbox: any ink change since the last scan (a never-scanned inbox counts from empty)
     return (
         rec.get("doc_id"),
-        (rec.get("last_scan") or {}).get("ink") or cloud.EMPTY_INK,
-        rec.get("document"),
+        (rec.get("last_read") or {}).get("ink") or rec.get("ink_at_send"),
+        rec.get("title"),
     )
 
 
@@ -69,7 +77,7 @@ async def remarkable_whats_new() -> str:
     with this, then call the suggested tools.
     </instructions>
     """
-    kinds = ("reviews", "forms", "inbox", "reading")
+    kinds = ("reviews", "forms", "inbox", "reading", "code-reviews", "latex-reviews")
     try:
         records = {k: list(Store(k).all()) for k in kinds}
     except Exception as exc:  # unreadable state dir: report, don't crash callers
@@ -116,7 +124,7 @@ async def remarkable_whats_new() -> str:
                 if status in ("annotated", "done"):
                     attention.append(
                         {
-                            "kind": kind.rstrip("s") if kind != "reading" else "article",
+                            "kind": _KIND_LABEL[kind],
                             "id": key,
                             "title": name,
                             "status": status,

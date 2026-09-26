@@ -345,17 +345,47 @@ def _is_sync_event(raw) -> bool:
     return attrs.get("event") == "SyncComplete"
 
 
-# One watcher per server process, started on first use.
+# One watcher per server process, started on first use and stopped again when
+# nobody has asked for live changes for IDLE_SHUTDOWN_SECONDS: every Claude
+# session is its own server process, and each watcher spends shared API quota.
+IDLE_SHUTDOWN_SECONDS = 600.0
 _shared: Optional[Watcher] = None
 _task: Optional[asyncio.Task] = None
+_reaper: Optional[asyncio.Task] = None
+_last_used = 0.0
+
+
+async def _reap() -> None:
+    global _task
+    while True:
+        await asyncio.sleep(30)
+        idle = time.time() - _last_used
+        if _task is not None and not _task.done() and idle > IDLE_SHUTDOWN_SECONDS:
+            _task.cancel()
+            _task = None
+            if _shared is not None:
+                _shared.mode = "stopped (idle)"
+            return
+
+
+def shutdown() -> None:
+    """Stop the shared watcher (server shutdown)."""
+    global _task, _reaper
+    for t in (_task, _reaper):
+        if t is not None and not t.done():
+            t.cancel()
+    _task = _reaper = None
 
 
 async def shared_watcher() -> Watcher:
-    global _shared, _task
+    global _shared, _task, _reaper, _last_used
+    _last_used = time.time()
     if _shared is None:
         _shared = Watcher()
     if _task is None or _task.done():
         _task = asyncio.create_task(_shared.run())
+    if _reaper is None or _reaper.done():
+        _reaper = asyncio.create_task(_reap())
         # First snapshot, so the caller's wait starts from "now".
         for _ in range(100):
             if _shared.state is not None:

@@ -121,7 +121,7 @@ remarkable_review_collect("post")
      "src_line": 6, "context": "An agent can have permission to fetch data and …"},
     {"id": "m77d01e3c", "page": 2, "kind": "circle", "intent": "change",
      "target": "Each session gets", "paragraph": 4, "src_lines": [14, 15],
-     "src_line": 15, "note": "own DB per chat?", "note_status": "transcribed:claude"}
+     "src_line": 15, "note": "own DB per chat?", "note_status": "transcribed", "note_engine": "claude"}
   ]
 }
 ```
@@ -176,7 +176,7 @@ handwriting pipeline.
 
 Field types are `checkbox`, `choice`, `multi`, `scale` and `text`, plus
 `heading` and `info` for layout. Forms go to `/Agent/Forms`. A form counts as
-`done` once it is moved to a folder named `Done` or `Answered`.
+`done` once it is moved to a done folder (see [State](#state)).
 
 ## Agent Inbox
 
@@ -435,16 +435,34 @@ the marks already returned, and the transcription cache are JSON files under
 
 ```text
 reviews/<review>.json        versions, block manifests, source text, seen strokes, requests
+code-reviews/<id>.json       diff rows (path/side/line), verdict boxes, seen strokes
+latex-reviews/<id>.json      snapshot paths, seen strokes
+latex/<id>/                  snapshot of the PDF, its SyncTeX file and the .tex sources
 forms/<form>.json            field geometry, last answers
 inbox/<name>.json            entries (fingerprints, status, text, replies)
+reading/<item>.json          article text, block manifest, quotes
+ink-digest/last.json         page hashes already reported by the ink digest
+autopilot/trmnl.json         what the autopilot last put on the TRMNL display
 handwriting-cache/<hash>.json
 ```
+
+Snapshots under `latex/` are kept until you delete them. Deleting a record's
+JSON file makes the server forget that workflow item; nothing on the tablet
+changes.
 
 Status checks compare hashes of the stroke files from the document metadata, so
 they need no download. Opening a document on the tablet doesn't count as a
 change.
 
-`REMARKABLE_REVIEW_FOLDER` changes the default upload folder (`/Review`).
+`REMARKABLE_REVIEW_FOLDER` changes the default upload folder of Markdown reviews
+(`/Review`). Code reviews go to `/Review/Code`, LaTeX reviews to `/Review/LaTeX`,
+forms and questions to `/Agent/Forms`, clipped articles to `/Reading`. Every
+send tool also takes an explicit `folder`.
+
+**Done folders.** In every workflow, moving a document into a folder named
+`Reviewed`, `Done`, `Erledigt`, `Answered` or `Beantwortet` (any case) marks
+it as finished. Its status becomes `done` while there is unread ink, and
+`collected` once that ink has been read.
 
 ## How marks are recognised
 

@@ -52,19 +52,23 @@ class Store:
         return self.dir / f"{key}.json"
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:
-        path = self._path(key)
+        try:
+            path = self._path(key)
+        except ValueError:
+            return None  # not a key we could ever have written: simply unknown
         if not path.exists():
             return None
         return json.loads(path.read_text())
 
     def put(self, key: str, record: Dict[str, Any]) -> None:
+        target = self._path(key)  # validates the key before it touches any path
         self.dir.mkdir(parents=True, exist_ok=True)
         record["updated_at"] = now_iso()
         fd, tmp = tempfile.mkstemp(dir=self.dir, prefix=f".{key}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(record, f, indent=2, ensure_ascii=False)
-            os.replace(tmp, self._path(key))
+            os.replace(tmp, target)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise

@@ -445,8 +445,9 @@ def test_state_store_roundtrip(tmp_path):
     store.put("a-b", {"slug": "a-b", "n": 1})
     assert store.get("a-b")["n"] == 1
     assert store.find(lambda r: r["n"] == 1)["slug"] == "a-b"
+    assert store.get("../escape") is None  # unknown, never readable outside the store
     with pytest.raises(ValueError):
-        store.get("../escape")
+        store.put("../escape", {})
     assert slugify("Ein Größerer Test: v2!") == "ein-groerer-test-v2"
 
 

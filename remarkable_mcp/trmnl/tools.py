@@ -292,6 +292,8 @@ def configured() -> bool:
     return bool(os.environ.get("TRMNL_PLUGIN_UUID")) or config_path().is_file()
 
 
-def register(mcp) -> None:
+def register(mcp, write_enabled: bool = True) -> None:
+    """Read tools always; pushing to the display only in write mode."""
     for fn, hints in _TOOLS:
-        mcp.tool(annotations=hints)(fn)
+        if hints is _READ or write_enabled:
+            mcp.tool(annotations=hints)(fn)

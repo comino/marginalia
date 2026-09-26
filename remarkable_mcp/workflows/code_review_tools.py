@@ -289,6 +289,7 @@ async def remarkable_code_review_collect(
     written = [r["note"] for r in remarks if r["note"]]
     if written:
         body += "\n\n" + "\n\n".join(written)
+    unread_general = sum(1 for r in remarks if not r["note"])
     gh = {
         "event": github_event(verdict),
         "body": body,
@@ -299,6 +300,11 @@ async def remarkable_code_review_collect(
         hint += (
             f" To post: gh api repos/{record['repo']}/pulls/{record['pr']}/reviews "
             "--input <file with the 'github' object>."
+        )
+    if unread_general:
+        hint += (
+            f" {unread_general} general remark(s) are untranscribed and not in the review "
+            "body yet: read them with include_images=true, only_new=false, mark_seen=false."
         )
     if any(c.get("note_status") == "not_transcribed" for c in out) and not include_images:
         hint += (

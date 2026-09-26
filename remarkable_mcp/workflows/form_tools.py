@@ -110,6 +110,8 @@ async def remarkable_form_send(
     - {"id", "type": "scale",  "label", "min": 1, "max": 5, "min_label", "max_label"} -> int
     - {"id", "type": "text",   "label", "lines": 2}        -> handwriting
     - {"type": "heading", "label"} and {"type": "info", "label"} for layout
+    - {"type": "image", "label", "path": "/abs/file.png"}  -> embedded picture
+      (PNG/JPEG up to 10 MB, not from secret locations)
     Use remarkable_ask for a single question.
     </instructions>
     <parameters>
@@ -535,11 +537,21 @@ async def remarkable_form_list(include_done: bool = True) -> str:
     )
 
 
+def _title(text: str) -> ToolAnnotations:
+    return ToolAnnotations(
+        title=text,
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=False,
+    )
+
+
 def register(mcp, write_enabled: bool) -> None:
     mcp.tool(annotations=_READ)(remarkable_form_read)
     mcp.tool(annotations=_LIST)(remarkable_form_list)
     if write_enabled:
         mcp.tool(annotations=_SEND)(remarkable_form_send)
-        mcp.tool(annotations=_SEND)(remarkable_ask)
-        mcp.tool(annotations=_SEND)(remarkable_clarify)
-        mcp.tool(annotations=_SEND)(remarkable_triage_send)
+        mcp.tool(annotations=_title("Ask a Question on the Tablet"))(remarkable_ask)
+        mcp.tool(annotations=_title("Ask About an Unclear Mark"))(remarkable_clarify)
+        mcp.tool(annotations=_title("Send Triage Sheet"))(remarkable_triage_send)

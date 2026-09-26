@@ -226,11 +226,28 @@ async def remarkable_latex_review_collect(
         return cur
 
     store.update(review, merge)
-    payload = make_response(
-        {"review": review, "project_dir": rec["project_dir"], "requests": out},
+    counts: dict = {}
+    for item in out:
+        counts[item["intent"]] = counts.get(item["intent"], 0) + 1
+    hint = (
         f"{len(out)} request(s); file/line point into {rec['project_dir']}."
         if out
-        else "No new marks.",
+        else "No new marks."
+    )
+    if any(i.get("note_status") == "not_transcribed" for i in out) and not include_images:
+        hint += (
+            " Some notes are untranscribed: call again with include_images=true, "
+            "only_new=false, mark_seen=false to read them."
+        )
+    payload = make_response(
+        {
+            "review": review,
+            "project_dir": rec["project_dir"],
+            "handwriting_backend": handwriting.backend(),
+            "counts": counts,
+            "requests": out,
+        },
+        hint,
     )
     return cloud.with_images(payload, images) if images else payload
 

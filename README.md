@@ -153,13 +153,15 @@ details are in [docs/workflows.md#autopilot](docs/workflows.md#autopilot).
 | `REMARKABLE_REVIEW_FOLDER` | Tablet folder for reviews (default `/Review`) |
 | `REMARKABLE_AUTOPILOT_CONFIG` | Autopilot config (default `~/.config/remarkable-mcp/autopilot.json`) |
 | `TRMNL_CONFIG` / `TRMNL_PLUGIN_UUID` | TRMNL display (default `~/.config/trmnl/config.json`) |
-| `REMARKABLE_READ_ONLY=1` | Expose only read tools |
+| `REMARKABLE_READ_ONLY=1` | Nothing is written to the tablet or the TRMNL display (send/upload tools are not registered) |
+| `REMARKABLE_ALLOWED_ROOTS` | Only read local files (drafts, PDFs, images) below these directories (`:`-separated) |
+| `REMARKABLE_ALLOW_PRIVATE_URLS=1` | Let `remarkable_clip` fetch local/private network addresses (off by default) |
 
 ## Development
 
 ```bash
 uv sync --all-extras
-uv run pytest -q          # ~710 tests, offline, about 40 s
+uv run pytest -q          # ~810 tests, offline, about 45 s
 uv run ruff check . && uv run ruff format --check .
 ```
 
@@ -175,8 +177,11 @@ per-feature tests, the suite includes:
   watcher; missing or hung agents for the autopilot.
 - **Real tools:** real `git diff` and SyncTeX (skipped when TeX is missing).
 
-Each round of features got an independent code review (four rounds so far),
-and every finding was fixed with a regression test.
+Each round of features got an independent code review (five rounds so far,
+including a whole-system security review and adversarial testing of the ink
+classifiers), and every finding was fixed with a regression test. Metamorphic
+tests pin down invariants: moving the page, reversing strokes, changing the
+pen's sampling rate or adding tremor must not change what a mark means.
 
 ```
 remarkable_mcp/

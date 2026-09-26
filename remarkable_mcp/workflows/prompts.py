@@ -92,7 +92,8 @@ def research_on_paper_prompt() -> list:
     return _user(
         "Call remarkable_inbox(). For each pending entry tagged #research (or ending with '?'), "
         "research the question with the tools you have, write a short brief with sources as "
-        "Markdown, send it with remarkable_markdown_to_pdf to /Reading, and acknowledge the entry "
+        "Markdown, send it with remarkable_clip(markdown=..., title=...) so my highlights on it "
+        "come back via remarkable_reading_notes, and acknowledge the entry "
         "with remarkable_inbox_done, replying with the document name."
     )
 

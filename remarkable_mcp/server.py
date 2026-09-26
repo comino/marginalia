@@ -270,12 +270,23 @@ For better handwriting recognition, configure GOOGLE_VISION_API_KEY and use
 REMARKABLE_OCR_BACKEND=auto (the default) or google.
 """
 
-    instructions += """
+    from remarkable_mcp.workflows.handwriting import backend as _hw_backend
+
+    hw = _hw_backend()
+    hw_line = (
+        f"Handwritten notes in workflow results are transcribed with '{hw}'."
+        if hw != "none"
+        else "No handwriting backend is configured: workflow results mark notes as "
+        "'not_transcribed'; call again with include_images=true (only_new=false, "
+        "mark_seen=false) and read the crops yourself."
+    )
+    instructions += f"""
 ## Workflow tools
 
-remarkable_whats_new() lists everything that needs attention (reviews, forms,
-inbox, reading highlights) with the next tool call for each. See the
-tablet_check_in prompt.
+remarkable_whats_new() lists everything that needs attention (reviews, code
+and LaTeX reviews, forms, inbox, reading highlights) with the next tool call
+for each. See the tablet_check_in prompt. {hw_line}
+The OCR notes below apply to the core read/image tools only.
 """
     from remarkable_mcp.trmnl import tools as trmnl_tools
 
@@ -337,6 +348,9 @@ async def lifespan(app: MCPServer) -> AsyncIterator[None]:
 
         await close_device_client()
         cleanup_export_resources()
+        from remarkable_mcp.workflows import live as _live
+
+        _live.shutdown()
 
 
 try:
@@ -382,7 +396,7 @@ if _write_tools.write_enabled():
 from remarkable_mcp.trmnl import tools as _trmnl_tools  # noqa: E402
 
 if _trmnl_tools.configured():
-    _trmnl_tools.register(mcp)
+    _trmnl_tools.register(mcp, _write_tools.write_enabled())
 
 # Register the interactive MCP App canvas (remarkable_canvas + ui:// resource).
 # There is no feature flag: app-capable clients (those advertising the MCP Apps

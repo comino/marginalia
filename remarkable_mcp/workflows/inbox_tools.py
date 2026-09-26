@@ -32,6 +32,13 @@ _WRITE = ToolAnnotations(
     idempotent_hint=False,
     open_world_hint=False,
 )
+_DONE = ToolAnnotations(
+    title="Acknowledge Inbox Requests",
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
 _READ = ToolAnnotations(
     title="Read Agent Inbox",
     read_only_hint=False,  # records entries in local state
@@ -321,7 +328,8 @@ async def remarkable_inbox_done(
     uploaded = None
     from remarkable_mcp.write_tools import write_enabled
 
-    if answered and send_replies and not write_enabled():
+    read_only = bool(answered and send_replies and not write_enabled())
+    if read_only:
         send_replies = False
     if answered and send_replies:
         if not cloud.is_cloud():
@@ -354,12 +362,14 @@ async def remarkable_inbox_done(
             "unknown": unknown,
             "replies_document": uploaded,
         },
-        "Acknowledged." + (f" Replies are on the tablet at {uploaded}." if uploaded else ""),
+        "Acknowledged."
+        + (f" Replies are on the tablet at {uploaded}." if uploaded else "")
+        + (" Replies were not uploaded: the server runs read-only." if read_only else ""),
     )
 
 
 def register(mcp, write_enabled: bool) -> None:
     mcp.tool(annotations=_READ)(remarkable_inbox)
-    mcp.tool(annotations=_READ)(remarkable_inbox_done)
+    mcp.tool(annotations=_DONE)(remarkable_inbox_done)
     if write_enabled:
         mcp.tool(annotations=_WRITE)(remarkable_inbox_setup)
