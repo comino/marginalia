@@ -20,7 +20,7 @@ import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Iterable, List, Optional, Sequence, Set
+from typing import Dict, Iterable, List, Optional, Sequence, Set
 
 import pymupdf
 
@@ -186,20 +186,25 @@ def segment_entries(page: PageInk) -> List[Entry]:
     writing = [s for s in strokes if s not in cancels and id(s) not in in_joined]
     pitch = LINE_PITCH if page.pdf_page is not None else max(2.2 * line_h, 18.0)
     groups = _group_lines(_lines(writing), pitch)
-    # A strike-shaped stroke that runs through no written line is writing
-    # (a dash, an un-looped word, a rule under a heading) - keep its ink.
-    stray = [c for c in cancels if not any(_crosses_a_line(c, g) for g in groups)]
-    stray_ids = {id(c) for c in stray}
-    if stray:
-        cancels = [c for c in cancels if id(c) not in stray_ids]
-        writing += [part for c in stray for part in getattr(c, "parts", [c])]
-        groups = _group_lines(_lines(writing), pitch)
     if not groups:
         return []
+    # A strike-shaped stroke that runs through no written line is ink of the
+    # entry it sits by (a dash, an un-looped word, a rule under a heading).
+    # It joins that entry after grouping: a divider drawn on the blank rule
+    # between two requests must not bridge them into one.
+    stray = [c for c in cancels if not any(_crosses_a_line(c, g) for g in groups)]
+    stray_ids = {id(c) for c in stray}
+    cancels = [c for c in cancels if id(c) not in stray_ids]
+    extra: Dict[int, List[Stroke]] = {}
+    for c in stray:
+        k = _nearest_group(c, groups, pitch)
+        if k is not None:
+            extra.setdefault(k, []).extend(getattr(c, "parts", [c]))
 
     entries: List[Entry] = []
-    for group in groups:
-        entry = Entry(page=page.page, strokes=[s for line in group for s in line])
+    for k, group in enumerate(groups):
+        ink = [s for line in group for s in line] + extra.get(k, [])
+        entry = Entry(page=page.page, strokes=ink)
         entry.fingerprints = {s.fingerprint() for s in entry.strokes}
         for c in cancels:
             if _crosses_a_line(c, group):
@@ -208,6 +213,21 @@ def segment_entries(page: PageInk) -> List[Entry]:
                     entry.fingerprints.add(part.fingerprint())
         entries.append(entry)
     return entries
+
+
+def _nearest_group(
+    stroke: Stroke, groups: Sequence[Sequence[Sequence[Stroke]]], pitch: float
+) -> Optional[int]:
+    """The entry whose ink is vertically closest (within a rule), if any."""
+    y = statistics.median(p[1] for p in stroke.points)
+    best, best_d = None, pitch
+    for k, group in enumerate(groups):
+        top = min(s.bbox[1] for line in group for s in line)
+        bottom = max(s.bbox[3] for line in group for s in line)
+        d = max(top - y, y - bottom, 0.0)
+        if d < best_d:
+            best, best_d = k, d
+    return best
 
 
 def _group_lines(lines: List[List[Stroke]], pitch: float) -> List[List[List[Stroke]]]:

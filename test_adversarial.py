@@ -613,3 +613,83 @@ def test_edge_between_boxes_inside_a_container_is_kept():
     assert {d.edges[0].source, d.edges[0].target} == {
         n.id for n in d.nodes if n.shape.rect[2] - n.shape.rect[0] < 100
     }
+
+
+# round 6 review: findings of the independent reviewer
+@pytest.mark.parametrize("aspect,deg", [(2, 30), (2, 45), (3, 10), (1.5, 20), (2, -60)])
+def test_tilted_ellipses_are_ellipses(aspect, deg):
+    rng = random.Random(deg)
+    pts = arc(200, 200, 30 * aspect, 30, 0, 2 * math.pi, 90)
+    pts = _rot(_jit(pts, 0.4, rng), deg, (200, 200))
+    assert classify_outline(pts, []).kind == "ellipse"
+
+
+@pytest.mark.parametrize("deg", [0, 8, 45])
+def test_squares_and_diamonds_keep_their_kind_when_tilted_a_little(deg):
+    square = _polyline([(100, 100), (160, 100), (160, 160), (100, 160), (101, 101)])
+    kind = classify_outline(_rot(square, deg, (130, 130)), []).kind
+    assert kind == ("diamond" if deg == 45 else "rect")
+
+
+@pytest.mark.parametrize("seed", range(10))
+@pytest.mark.parametrize("length", [40, 150])
+def test_pen_lift_flick_is_not_an_arrowhead(seed, length):
+    rng = random.Random(seed)
+    flick, ang = rng.uniform(1.5, 3.5), math.radians(180 - rng.uniform(20, 50))
+    end = (50 + length + flick * math.cos(ang), 100 + flick * math.sin(ang))
+    pts = _polyline([(50, 100), (50 + length, 100)]) + _polyline([(50 + length, 100), end], 1.0)
+    assert classify_outline(_jit(pts, 0.3, rng), []).kind == "line"
+
+
+@pytest.mark.parametrize("seed", range(10))
+@pytest.mark.parametrize("length", [60, 150])
+def test_noisy_line_is_not_an_arrow(seed, length):
+    rng = random.Random(seed)
+    pts = [
+        (50 + length * t / 99, 100 + 1.5 * math.sin(t * rng.uniform(0.8, 1.6))) for t in range(100)
+    ]
+    assert classify_outline(_jit(pts, 1.5, rng), []).kind == "line"
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_retraced_v_on_a_short_shaft_is_an_arrow(seed):
+    rng = random.Random(seed)
+    head, sp, t = rng.uniform(6, 9), rng.uniform(0.35, 0.6), (90, 100)
+    left = (t[0] - head * math.cos(sp), t[1] - head * math.sin(sp))
+    right = (t[0] - head * math.cos(sp), t[1] + head * math.sin(sp))
+    pts = _polyline([(50, 100), t]) + _polyline([t, left, t, right], 1.0)
+    shape = classify_outline(_jit(pts, 0.3, rng), [])
+    assert shape.kind == "arrow" and shape.head_at_end
+
+
+@pytest.mark.parametrize("back", [4, 8])
+def test_label_letter_by_a_line_end_is_not_a_head(back):
+    rng = random.Random(back)
+    boxes, shaft, t = _two_boxes_and_shaft(rng)
+    x, y = t[0] - back - 4, t[1] - 3
+    letter = [(x + 4 * u / 20, y - 4 * abs(math.sin(math.pi * u / 10))) for u in range(21)]
+    [edge] = recognise(boxes + [S(shaft, 2), S(letter, 3)]).edges
+    assert not edge.directed
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_inbox_divider_between_requests_keeps_them_apart(seed):
+    rng = random.Random(seed)
+    a = _request(40, _rule(0) - 1, rng, 4)
+    b = _request(40, _rule(2) - 1, rng, 4)
+    divider = line(40, 200, _rule(1) - 4, n=60, jitter=0.3, rng=rng)
+    entries = _inbox_entries(a + [divider] + b)
+    assert len(entries) == 2 and not any(c for _, c in entries)
+    assert sum(n for n, _ in entries) == len(a) + len(b) + 1  # the divider's ink is kept
+
+
+@pytest.mark.parametrize("option", ["Yes", "Later", "No"])
+def test_straight_stroke_through_box_and_label_is_not_an_answer(form, option):
+    area = next(a for a in form.areas if a.option == option)
+    r, lab = area.rect, area.label_rect
+    y = (r[1] + r[3]) / 2
+    through = [(r[0] + 2 + (lab[2] + 2 - r[0] - 2) * t / 40, y) for t in range(41)]
+    pointer = [(r[0] - 14 + (r[0] + 6 - r[0] + 14) * t / 20, y + 0.1 * t) for t in range(21)]
+    for stroke in (through, pointer):
+        ans = _answers(form, [stroke])["c"]
+        assert ans.status != "answered", stroke[:2]

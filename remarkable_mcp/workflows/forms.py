@@ -565,8 +565,12 @@ def _mostly_in_one(stroke: Stroke, area: AnswerArea, areas: Sequence[AnswerArea]
     """A mark drawn off-centre (e.g. a big tick whose tip is in the box):
     a good part of the stroke is in this box and none of it in another."""
     length = stroke_features(stroke).length or 1.0
+    if math.dist(stroke.points[0], stroke.points[-1]) > 0.9 * length:
+        return False  # a straight line: a crossing-out or a pointer, not a tick
     if ink_length_in(_grown(area.rect), [stroke]) < 0.3 * length:
         return False
+    if area.label_rect is not None and ink_length_in(area.label_rect, [stroke]) > 0.1 * length:
+        return False  # runs over the option's label: struck through
     return not any(
         ink_length_in(_grown(b.rect), [stroke]) > 0.1 * length for b in areas if b is not area
     )

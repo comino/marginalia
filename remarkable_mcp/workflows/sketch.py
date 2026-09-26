@@ -239,6 +239,20 @@ def _mean_ellipse_distance(points: Sequence[Point], rect: Rect) -> float:
     return total / len(points)
 
 
+def _principal_axis(points: Sequence[Point]) -> Tuple[float, float]:
+    """Angle of the ink's main axis (radians) and how elongated it is (>= 1)."""
+    n = len(points)
+    mx = sum(p[0] for p in points) / n
+    my = sum(p[1] for p in points) / n
+    sxx = sum((p[0] - mx) ** 2 for p in points) / n
+    syy = sum((p[1] - my) ** 2 for p in points) / n
+    sxy = sum((p[0] - mx) * (p[1] - my) for p in points) / n
+    theta = 0.5 * math.atan2(2 * sxy, sxx - syy)
+    root = math.sqrt(((sxx - syy) / 2) ** 2 + sxy**2)
+    big, small = (sxx + syy) / 2 + root, (sxx + syy) / 2 - root
+    return theta, math.sqrt(big / small) if small > 1e-9 else float("inf")
+
+
 def _classify_closed(points: Sequence[Point], rect: Rect, strokes: List[Stroke]) -> Shape:
     """Rectangle, diamond, ellipse or triangle: whichever outline the ink fits.
 
@@ -269,11 +283,18 @@ def _classify_closed(points: Sequence[Point], rect: Rect, strokes: List[Stroke])
         "rect": _mean_distance(points, box) / scale,
         "diamond": _mean_distance(points, diamond) / scale,
     }
-    # Drawn a little askew: fit the outlines to the straightened ink as well
-    # (unless one already fits cleanly).
+    # Drawn askew: fit the outlines to the straightened ink as well (unless one
+    # already fits cleanly). An elongated outline is straightened along its
+    # principal axis - that is where a tilted ellipse's axes are. A round one
+    # has no such axis: a square turned by 45 degrees is a diamond.
     clean = min(fits.values()) < 0.04
-    for deg in () if clean else (-10.0, -5.0, 5.0, 10.0):
-        a = math.radians(deg)
+    angles: List[Tuple[float, bool]] = []
+    if not clean:
+        angles = [(math.radians(d), True) for d in (-10.0, -5.0, 5.0, 10.0)]
+        axis, elongation = _principal_axis(points)
+        if elongation > 1.3:
+            angles.append((-axis, abs(math.degrees(axis)) <= 12 or elongation > 1.6))
+    for a, polygons in angles:
         ca, sa = math.cos(a), math.sin(a)
         turned = [
             (cx + (x - cx) * ca - (y - cy) * sa, cy + (x - cx) * sa + (y - cy) * ca)
@@ -284,8 +305,12 @@ def _classify_closed(points: Sequence[Point], rect: Rect, strokes: List[Stroke])
         tscale = max(min(tx1 - tx0, ty1 - ty0), 1e-6)
         tbox = [(tx0, ty0), (tx1, ty0), (tx1, ty1), (tx0, ty1)]
         tdia = [(tcx, ty0), (tx1, tcy), (tcx, ty1), (tx0, tcy)]
-        fits["rect"] = min(fits["rect"], _mean_distance(turned, tbox) / tscale)
-        fits["diamond"] = min(fits["diamond"], _mean_distance(turned, tdia) / tscale)
+        fits["ellipse"] = min(
+            fits["ellipse"], _mean_ellipse_distance(turned, (tx0, ty0, tx1, ty1)) / tscale
+        )
+        if polygons:
+            fits["rect"] = min(fits["rect"], _mean_distance(turned, tbox) / tscale)
+            fits["diamond"] = min(fits["diamond"], _mean_distance(turned, tdia) / tscale)
     if len(corners) == 3 and _mean_distance(points, corners) / scale < min(fits.values()):
         return Shape("triangle", rect, strokes, corners)
     kind = min(fits, key=fits.get)
@@ -347,15 +372,22 @@ def _in_stroke_head(pts: Sequence[Point]) -> Optional[int]:
     best: Optional[int] = None
     for i in range(len(pts) - 2, 0, -1):
         tail += math.dist(pts[i], pts[i + 1])
-        if tail > 0.4 * total:
+        if tail > 0.5 * total:
             break
         if any(math.dist(pts[i], q) > 0.3 * total for q in pts[i + 1 :]):
             break
         if _angle(pts[i - 1], pts[i], pts[i + 1]) < 60:
             best = i  # keep walking back: a head drawn as several folds
-    if best is None or _path_length(pts[: best + 1]) < 2.0 * max(
-        math.dist(pts[best], q) for q in pts[best + 1 :]
-    ):
+    if best is None:
+        return None
+    tip, start = pts[best], pts[0]
+    shaft = math.dist(start, tip) or 1e-6
+    ux, uy = (tip[0] - start[0]) / shaft, (tip[1] - start[1]) / shaft
+    # A barb runs back from the tip, along the shaft; a flick as the pen lifts
+    # or tremor does not get several points behind it.
+    back = max(-((q[0] - tip[0]) * ux + (q[1] - tip[1]) * uy) for q in pts[best + 1 :])
+    reach = max(math.dist(tip, q) for q in pts[best + 1 :])
+    if back < 4.0 or _path_length(pts[: best + 1]) < 2.0 * reach:
         return None
     return best
 
@@ -390,7 +422,7 @@ def _points_back_along(stroke: Stroke, line: Shape, at_end: bool) -> bool:
     my = sum(p[1] for p in stroke.points) / len(stroke.points)
     along = (mx - tip[0]) * ux + (my - tip[1]) * uy
     across = abs(-(mx - tip[0]) * uy + (my - tip[1]) * ux)
-    return along < 0 and across < -along
+    return along < 0 and across < 0.5 * -along
 
 
 def _is_arrowhead(stroke: Stroke, line: Shape, tip: Optional[List[Point]]) -> Optional[bool]:
