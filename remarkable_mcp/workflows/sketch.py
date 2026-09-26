@@ -528,9 +528,7 @@ def to_svg(d: Diagram, pad: float = 12.0) -> str:
     for e in d.edges:
         pts = e.shape.points
         a, b = pts[0], pts[-1]
-        out.append(
-            f'<line x1="{a[0] - ox:.1f}" y1="{a[1] - oy:.1f}" x2="{b[0] - ox:.1f}" y2="{b[1] - oy:.1f}"/>'
-        )
+        out.append(f'<path d="M{pt(a)} L{pt(b)}"/>')
         if e.shape.head_at_end:
             out.append(head(b, a))
         if e.shape.head_at_start:
