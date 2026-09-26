@@ -3,6 +3,7 @@
 import asyncio
 import json
 
+import pymupdf
 import pytest
 
 from remarkable_mcp.workflows.forms import FormSpecError, read_answers, render_form, stray_strokes
@@ -166,3 +167,53 @@ def test_form_send_rejects_bad_spec(cloud):  # noqa: F811
         asyncio.run(form_tools.remarkable_form_send("Bad", [{"type": "nope", "label": "x"}]))
     )
     assert err["_error"]["type"] == "invalid_form"
+
+
+def test_circle_is_credited_to_one_option_only(form):
+    later = _area(form, "publish", "Later").rect
+    loop = _ellipse(later[0] - 4, later[1] - 12, later[2] + 60, later[3] + 12, loops=1.05)
+    three = _area(form, "ready", "3").rect
+    wide = _ellipse(three[0] - 22, three[1] - 4, three[2] + 22, three[3] + 4, loops=1.05)
+    answers, pages = _read(form, [loop, wide])
+    assert answers["publish"].value == "Later" and answers["publish"].status == "answered"
+    assert answers["ready"].value == 3 and answers["ready"].status == "answered"
+    assert stray_strokes(form.manifest(), pages) == {}
+
+
+def test_long_labels_stay_with_their_boxes():
+    long = "A deliberately long option label that wraps onto a second line in the form " * 2
+    fields = [
+        {"type": "choice", "label": f"Q{i}", "options": [long, "short", long]} for i in range(6)
+    ]
+    r = render_form("Wrapping", fields)
+    with pymupdf.open(stream=r.pdf, filetype="pdf") as doc:
+        for a in r.areas:
+            words = [
+                w
+                for w in doc[a.page - 1].get_text("words")
+                if abs(w[1] - a.rect[1]) < 6 and w[0] > a.rect[2]
+            ]
+            assert words, f"box on page {a.page} has no label beside it"
+
+
+def test_form_with_only_checkboxes_is_answered_once_touched(cloud):  # noqa: F811
+    from remarkable_mcp.workflows import form_tools
+
+    sent = _json_of(
+        asyncio.run(
+            form_tools.remarkable_form_send(
+                "Checks",
+                [
+                    {"id": "a", "type": "checkbox", "label": "A"},
+                    {"id": "b", "type": "checkbox", "label": "B"},
+                ],
+            )
+        )
+    )
+    record = form_tools._forms().get(sent["form"])
+    assert _json_of(asyncio.run(form_tools.remarkable_form_read(sent["form"])))["answered"] is False
+    box_a = next(a for a in record["manifest"]["areas"] if a["field"] == "a")
+    cloud.annotate(record["doc_id"], {0: [(_tick(tuple(box_a["rect"])), FINELINER, 446.0)]})
+    got = _json_of(asyncio.run(form_tools.remarkable_form_read(sent["form"])))
+    assert got["answered"] is True
+    assert got["values"] == {"a": True, "b": False}

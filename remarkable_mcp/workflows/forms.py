@@ -144,6 +144,11 @@ class _Layout:
         if self.y + height > BOTTOM:
             self.new_page()
 
+    def measure(self, text: str, size: float, indent: float = 0.0, bold: bool = False) -> float:
+        """Height ``text`` would take at the cursor (for keeping boxes with labels)."""
+        font = "hebo" if bold else "helv"
+        return len(_wrap(text, size, self.width - indent, font)) * size * 1.35
+
     def text(
         self, text: str, size: float, bold: bool = False, color=_BLACK, indent: float = 0.0
     ) -> float:
@@ -218,7 +223,7 @@ def render_form(
             lay.y += 8
             continue
         if t == "checkbox":
-            lay.ensure(BOX + 10)
+            lay.ensure(max(lay.measure(f["label"], 10.5, BOX + 8), BOX) + 10)
             areas.append(AnswerArea(f["id"], None, lay.page_no, _box(lay.page, MARGIN_X, lay.y)))
             saved = lay.y
             lay.y -= 1
@@ -235,7 +240,7 @@ def render_form(
                 lay.text("Tick all that apply.", 7.5, color=_GREY, indent=8)
                 lay.y += 3
             for opt in f["options"]:
-                lay.ensure(BOX + 8)
+                lay.ensure(max(lay.measure(opt, 10, 8 + BOX + 8), BOX) + 8)
                 rect = _box(lay.page, MARGIN_X + 8, lay.y, BOX)
                 areas.append(AnswerArea(f["id"], opt, lay.page_no, rect))
                 saved = lay.y
@@ -350,15 +355,46 @@ class AreaScore:
         return self.ink >= 6.0
 
 
+def _enclosure_owner(stroke: Stroke, areas: Sequence[AnswerArea]) -> Optional[AnswerArea]:
+    """The one area a loop is drawn around: the enclosed box nearest its centre."""
+    inside = [a for a in areas if _encloses(stroke, a.rect)]
+    if not inside:
+        return None
+    cx = (stroke.bbox[0] + stroke.bbox[2]) / 2
+    cy = (stroke.bbox[1] + stroke.bbox[3]) / 2
+    return min(
+        inside,
+        key=lambda a: math.hypot(
+            (a.rect[0] + a.rect[2]) / 2 - cx, (a.rect[1] + a.rect[3]) / 2 - cy
+        ),
+    )
+
+
 def score_areas(areas: Sequence[AnswerArea], pages: Dict[int, PageInk]) -> List[AreaScore]:
+    """Ink and circling per answer area.
+
+    A loop drawn around one option is credited to that option only: it neither
+    counts as ink in the neighbouring boxes it crosses nor circles them.
+    """
+    by_page: Dict[int, List[AnswerArea]] = {}
+    for a in areas:
+        by_page.setdefault(a.page, []).append(a)
+    owner: Dict[int, AnswerArea] = {}  # id(stroke) -> the area it encloses
+    for pno, page_areas in by_page.items():
+        page = pages.get(pno)
+        for st in page.strokes if page else []:
+            o = _enclosure_owner(st, page_areas)
+            if o is not None:
+                owner[id(st)] = o
     scores = []
     for a in areas:
         page = pages.get(a.page)
         strokes = page.strokes if page else []
+        plain = [st for st in strokes if id(st) not in owner]
         side = max(a.rect[2] - a.rect[0], a.rect[3] - a.rect[1])
         grown = (a.rect[0] - 2, a.rect[1] - 2, a.rect[2] + 2, a.rect[3] + 2)
-        ink = ink_length_in(grown, strokes) / (side or 1)
-        circled = any(_encloses(s, a.rect) for s in strokes)
+        ink = ink_length_in(grown, plain) / (side or 1)
+        circled = any(owner.get(id(st)) is a for st in strokes)
         scores.append(AreaScore(a, ink, circled))
     return scores
 
@@ -453,10 +489,20 @@ def stray_strokes(manifest: dict, pages: Dict[int, PageInk]) -> Dict[int, List[S
         r = a["rect"]
         pad = 14 if a["option"] is not None else 4
         grown.setdefault(a["page"], []).append((r[0] - pad, r[1] - pad, r[2] + pad, r[3] + pad))
+    areas_on: Dict[int, List[AnswerArea]] = {}
+    for a in manifest["areas"]:
+        areas_on.setdefault(a["page"], []).append(
+            AnswerArea(a["field"], a["option"], a["page"], tuple(a["rect"]))
+        )
     out: Dict[int, List[Stroke]] = {}
     for pno, page in pages.items():
         rects = grown.get(pno, [])
-        extra = [s for s in page.strokes if not any(_mostly_inside(s, r) for r in rects)]
+        extra = [
+            s
+            for s in page.strokes
+            if not any(_mostly_inside(s, r) for r in rects)
+            and _enclosure_owner(s, areas_on.get(pno, [])) is None  # circled answers
+        ]
         if extra:
             out[pno] = extra
     return out

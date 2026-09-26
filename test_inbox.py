@@ -106,3 +106,19 @@ def test_inbox_requires_setup(cloud):  # noqa: F811
 
     err = _json_of(asyncio.run(t.remarkable_inbox(name="nope")))
     assert err["_error"]["type"] == "inbox_not_set_up"
+
+
+def test_erasing_the_strike_restores_the_entry(cloud):  # noqa: F811
+    from remarkable_mcp.workflows import inbox_tools as t
+
+    asyncio.run(t.remarkable_inbox_setup(pages=1))
+    doc = next(d for d in cloud.docs.values() if d.VissibleName == "Agent Inbox")
+    words = [(s, FINELINER, 446.0) for s in _line(1, words=4)]
+    y_mid = TEMPLATE_TOP + LINE_PITCH - 12 + 4
+    strike = [(_hline(36, 160, y_mid), FINELINER, 446.0)]
+    cloud.annotate(doc.id, {0: words + strike})
+    everything = _json_of(asyncio.run(t.remarkable_inbox(pending_only=False)))["entries"]
+    assert [e["status"] for e in everything] == ["cancelled"]
+    cloud.annotate(doc.id, {0: words})  # strike erased
+    [entry] = _json_of(asyncio.run(t.remarkable_inbox()))["entries"]
+    assert entry["status"] == "pending"

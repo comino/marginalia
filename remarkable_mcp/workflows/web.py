@@ -32,8 +32,14 @@ def fetch_html(url: str, timeout: float = 20.0) -> str:
 
     resp = requests.get(url, headers={"User-Agent": _UA}, timeout=timeout)
     resp.raise_for_status()
-    resp.encoding = resp.encoding or resp.apparent_encoding
+    # requests assumes ISO-8859-1 for text/* without a charset; most pages are UTF-8.
+    if "charset" not in resp.headers.get("Content-Type", "").lower():
+        resp.encoding = resp.apparent_encoding or "utf-8"
     return resp.text
+
+
+class NoArticleText(ValueError):
+    """The page has no extractable article text (e.g. rendered by JavaScript)."""
 
 
 def extract_article(html: str, url: Optional[str] = None) -> Article:
@@ -41,9 +47,15 @@ def extract_article(html: str, url: Optional[str] = None) -> Article:
         return _with_trafilatura(html, url)
     except ImportError:
         pass
-    except ValueError:
-        pass  # trafilatura found nothing; try the heuristic
-    return _with_soup(html, url)
+    except Exception:  # found nothing or choked on the page; try the heuristic
+        pass
+    art = _with_soup(html, url)
+    if len(art.markdown.split()) < 30:
+        raise NoArticleText(
+            "No readable article text on this page (it may be rendered by JavaScript). "
+            "Pass the text as markdown= instead."
+        )
+    return art
 
 
 def _with_trafilatura(html: str, url: Optional[str]) -> Article:
@@ -117,7 +129,7 @@ def _with_soup(html: str, url: Optional[str]) -> Article:
             lines.append(text)
         lines.append("")
     md = "\n".join(lines).strip()
-    return Article(title=title, markdown=md or "(no readable text found)", url=url)
+    return Article(title=title, markdown=md, url=url)
 
 
 def text_fragment_link(url: Optional[str], quote_text: str, max_words: int = 8) -> Optional[str]:
@@ -128,10 +140,13 @@ def text_fragment_link(url: Optional[str], quote_text: str, max_words: int = 8) 
     if not words:
         return None
     base = url.split("#", 1)[0]
+
+    def enc(text: str) -> str:
+        # "-" and "," are syntax in text fragments and must be percent-encoded.
+        return quote(text, safe="").replace("-", "%2D")
+
     if len(words) <= max_words:
-        frag = quote(" ".join(words), safe="")
+        frag = enc(" ".join(words))
     else:
-        start = quote(" ".join(words[:4]), safe="")
-        end = quote(" ".join(words[-4:]), safe="")
-        frag = f"{start},{end}"
+        frag = f"{enc(' '.join(words[:4]))},{enc(' '.join(words[-4:]))}"
     return f"{base}#:~:text={frag}"

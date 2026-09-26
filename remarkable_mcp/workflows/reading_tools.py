@@ -17,6 +17,7 @@ from remarkable_mcp.workflows.review_pdf import render_review_pdf
 from remarkable_mcp.workflows.state import Store, now_iso, slugify
 from remarkable_mcp.workflows.web import (
     Article,
+    NoArticleText,
     extract_article,
     fetch_html,
     text_fragment_link,
@@ -107,6 +108,8 @@ async def remarkable_clip(
         )
     try:
         art, rendered, doc = await asyncio.to_thread(work)
+    except NoArticleText as exc:
+        return make_error("no_article_text", str(exc), "Pass markdown= with the article text.")
     except Exception as exc:
         return make_error("clip_failed", f"Could not clip the article: {exc}", "Check the URL.")
 
@@ -218,6 +221,8 @@ async def remarkable_reading_notes(
         for rec in records:
             doc = cloud.find_by_id(c, rec["doc_id"])
             if doc is None:
+                if item:
+                    raise LookupError(rec["title"])
                 continue
             if not item and cloud.ink_token(doc) == (rec.get("last_read") or {}).get(
                 "ink", rec.get("ink_at_send")
@@ -240,9 +245,29 @@ async def remarkable_reading_notes(
 
     try:
         results = await asyncio.to_thread(work)
+    except LookupError as exc:
+        return make_error(
+            "document_missing",
+            f"'{exc.args[0]}' is no longer on the tablet (deleted or in the trash).",
+            "Clip it again if you still need it.",
+        )
     except Exception as exc:
         return make_error("reading_failed", str(exc), "Check remarkable_status().")
 
+    items_out, images = await asyncio.to_thread(
+        _shape_results, results, item, include_images, mark_seen
+    )
+    total = sum(len(i["quotes"]) for i in items_out)
+    payload = make_response(
+        {"items": items_out, "handwriting_backend": handwriting.backend()},
+        f"{total} quote(s) from {len(items_out)} article(s)." if total else "No new highlights.",
+    )
+    return cloud.with_images(payload, images) if images else payload
+
+
+def _shape_results(results, item, include_images: bool, mark_seen: bool):
+    """Transcribe notes, build quotes and record state (runs off the event loop)."""
+    store = _store()
     engine = handwriting.backend()
     items_out = []
     images = []
@@ -272,7 +297,8 @@ async def remarkable_reading_notes(
                     seen.update(r.mark.seen_keys)
                 current["seen_strokes"] = sorted(seen)
             current.setdefault("quotes", {}).update({q["id"]: q for q in quotes})
-            current["last_read"] = {"at": now_iso(), "ink": cloud.ink_token(doc)}
+            if mark_seen:  # otherwise the next call must still see this ink as new
+                current["last_read"] = {"at": now_iso(), "ink": cloud.ink_token(doc)}
             return current
 
         store.update(rec["id"], merge)
@@ -286,13 +312,7 @@ async def remarkable_reading_notes(
                     "markdown": _digest(rec, quotes) if quotes else None,
                 }
             )
-
-    total = sum(len(i["quotes"]) for i in items_out)
-    payload = make_response(
-        {"items": items_out, "handwriting_backend": engine},
-        f"{total} quote(s) from {len(items_out)} article(s)." if total else "No new highlights.",
-    )
-    return cloud.with_images(payload, images) if images else payload
+    return items_out, images
 
 
 async def remarkable_reading_list() -> str:

@@ -162,24 +162,43 @@ class Diagram:
 # --------------------------------------------------------------------------- recognition
 
 
+def _is_closed(stroke: Stroke) -> bool:
+    x0, y0, x1, y1 = stroke.bbox
+    size = max(x1 - x0, y1 - y0) or 1e-6
+    return math.dist(stroke.points[0], stroke.points[-1]) / size < 0.25
+
+
 def _merge_open_strokes(strokes: List[Stroke], gap: float) -> List[List[Stroke]]:
-    """Chain strokes whose endpoints meet into candidate multi-stroke outlines."""
-    groups = [[s] for s in strokes]
-    changed = True
-    while changed:
-        changed = False
-        for i in range(len(groups)):
-            for j in range(i + 1, len(groups)):
-                ends_i = _chain_ends(groups[i])
-                ends_j = _chain_ends(groups[j])
-                if min(math.dist(a, b) for a in ends_i for b in ends_j) <= gap:
-                    groups[i] = groups[i] + groups[j]
-                    del groups[j]
-                    changed = True
-                    break
-            if changed:
-                break
-    return groups
+    """Chain open strokes whose endpoints meet into candidate multi-stroke outlines.
+
+    Strokes that already close on themselves stay alone (two boxes drawn from a
+    shared corner are two shapes). Endpoints are bucketed on a grid of ``gap``
+    so the join is near-linear even on dense pages.
+    """
+    parent = list(range(len(strokes)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    grid: Dict[Tuple[int, int], List[Tuple[int, Point]]] = {}
+    for i, st in enumerate(strokes):
+        if _is_closed(st):
+            continue
+        for p in (st.points[0], st.points[-1]):
+            cell = (int(p[0] // gap), int(p[1] // gap))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for j, q in grid.get((cell[0] + dx, cell[1] + dy), ()):
+                        if j != i and math.dist(p, q) <= gap:
+                            parent[find(i)] = find(j)
+            grid.setdefault(cell, []).append((i, p))
+    groups: Dict[int, List[Stroke]] = {}
+    for i, st in enumerate(strokes):
+        groups.setdefault(find(i), []).append(st)
+    return list(groups.values())
 
 
 def _chain_ends(strokes: Sequence[Stroke]) -> List[Point]:
@@ -260,17 +279,24 @@ def classify_outline(points: Sequence[Point], strokes: List[Stroke]) -> Optional
     return shape
 
 
-def _is_arrowhead(stroke: Stroke, line: Shape) -> Optional[bool]:
-    """A small V next to one end of ``line``: returns True (end) / False (start) / None."""
+def _v_tip(stroke: Stroke) -> Optional[Point]:
+    """Tip of a small V-shaped stroke (an arrowhead candidate), else None."""
     sx0, sy0, sx1, sy1 = stroke.bbox
     size = max(sx1 - sx0, sy1 - sy0)
-    line_len = _path_length(line.points)
-    if size > 0.5 * line_len or size < 3:
+    if size < 3:
         return None
     simple = rdp(stroke.points, max(0.8, 0.12 * size))
     if len(simple) != 3 or _angle(*simple) > 110:
         return None
-    tip = simple[1]
+    return simple[1]
+
+
+def _is_arrowhead(stroke: Stroke, line: Shape, tip: Optional[Point]) -> Optional[bool]:
+    """A small V next to one end of ``line``: returns True (end) / False (start) / None."""
+    sx0, sy0, sx1, sy1 = stroke.bbox
+    size = max(sx1 - sx0, sy1 - sy0)
+    if tip is None or size > 0.5 * _path_length(line.points):
+        return None
     start, end = line.points[0], line.points[-1]
     reach = max(6.0, 0.8 * size)
     if math.dist(tip, end) <= reach:
@@ -287,6 +313,13 @@ def _node_boundary_distance(p: Point, shape: Shape) -> float:
         rx, ry = max((x1 - x0) / 2, 1e-6), max((y1 - y0) / 2, 1e-6)
         r = math.hypot((p[0] - cx) / rx, (p[1] - cy) / ry)
         return abs(r - 1.0) * min(rx, ry)
+    if shape.kind in ("diamond", "triangle") and len(shape.points) >= 3:
+        if shape.kind == "diamond":
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            poly = [(cx, y0), (x1, cy), (cx, y1), (x0, cy)]
+        else:
+            poly = list(shape.points)
+        return min(_point_segment_distance(p, a, b) for a, b in zip(poly, poly[1:] + poly[:1]))
     inside = x0 <= p[0] <= x1 and y0 <= p[1] <= y1
     if inside:
         return min(p[0] - x0, x1 - p[0], p[1] - y0, y1 - p[1])
@@ -336,10 +369,16 @@ def recognise(
     # Separate arrowheads (small V strokes at a connector end).
     connectors = [s for s in shapes if not s.is_node]
     writing: List[Stroke] = []
+    ends = [(p, c) for c in connectors for p in (c.points[0], c.points[-1])]
     for s in small:
         claimed = False
-        for c in connectors:
-            side = _is_arrowhead(s, c)
+        size = max(s.bbox[2] - s.bbox[0], s.bbox[3] - s.bbox[1])
+        reach = max(6.0, 0.8 * size)
+        # Cheap geometric gate first; simplify the stroke only near a connector end.
+        near = [c for p, c in ends if rect_distance(s.bbox, (p[0], p[1], p[0], p[1])) <= reach]
+        tip = _v_tip(s) if near else None
+        for c in {id(c): c for c in near}.values():
+            side = _is_arrowhead(s, c, tip)
             if side is not None:
                 c.kind = "arrow"
                 c.strokes.append(s)

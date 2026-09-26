@@ -107,3 +107,64 @@ def test_clip_needs_input(cloud):  # noqa: F811
     from remarkable_mcp.workflows import reading_tools as rt
 
     assert _json_of(asyncio.run(rt.remarkable_clip()))["_error"]["type"] == "invalid_arguments"
+
+
+def test_fragment_encodes_dashes_and_commas():
+    link = web.text_fragment_link("https://a.b/x", "state-of-the-art, fast")
+    assert link == "https://a.b/x#:~:text=state%2Dof%2Dthe%2Dart%2C%20fast"
+
+
+def test_page_without_article_text_is_rejected(monkeypatch):
+    real_import = builtins.__import__
+
+    def no_trafilatura(name, *a, **k):
+        if name == "trafilatura":
+            raise ImportError
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_trafilatura)
+    with pytest.raises(web.NoArticleText):
+        web.extract_article("<html><body><div id=app></div><script>x()</script></body></html>")
+
+
+def test_utf8_page_without_charset_header(monkeypatch):
+    body = "<html><body><p>Grüße aus München</p></body></html>".encode()
+
+    class Resp:
+        headers = {"Content-Type": "text/html"}
+        content = body
+        encoding = None
+        apparent_encoding = "utf-8"
+
+        def raise_for_status(self):
+            pass
+
+        @property
+        def text(self):
+            return self.content.decode(self.encoding or "iso-8859-1")
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: Resp())
+    assert "Grüße aus München" in web.fetch_html("https://example.com")
+
+
+def test_reading_notes_mark_seen_false_keeps_marks_new(cloud):  # noqa: F811
+    from remarkable_mcp.workflows import reading_tools as rt
+
+    item = _json_of(asyncio.run(rt.remarkable_clip(url="https://example.com/lf", html=HTML)))[
+        "item"
+    ]
+    doc = next(d for d in cloud.docs.values() if d.VissibleName == "Local-first ideas")
+    pdf = cloud.zips[doc.id]
+    pno, rects = _phrase_rects(pdf, "Users own their data")
+    y = (rects[0][1] + rects[0][3]) / 2
+    cloud.annotate(
+        doc.id, {pno: [(_hline(rects[0][0], rects[-1][2], y), HIGHLIGHTER, _page_w(pdf))]}
+    )
+    peek = _json_of(asyncio.run(rt.remarkable_reading_notes(mark_seen=False)))
+    assert peek["items"][0]["quotes"]
+    again = _json_of(asyncio.run(rt.remarkable_reading_notes()))
+    assert again["items"][0]["quotes"]  # still new: the peek did not consume them
+
+    doc.parent = doc.Parent = "trash"
+    err = _json_of(asyncio.run(rt.remarkable_reading_notes(item)))
+    assert err["_error"]["type"] == "document_missing"

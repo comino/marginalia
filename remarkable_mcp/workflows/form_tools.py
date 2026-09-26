@@ -282,8 +282,13 @@ async def remarkable_form_read(form: str, include_images: bool = False):
     except Exception as exc:
         return make_error("read_failed", str(exc), "Check remarkable_status().")
 
-    choices = [f for f in fields if f["type"] in ("choice", "multi", "scale", "checkbox")]
-    answered = bool(choices) and all(f["status"] in ("answered", "ambiguous") for f in choices)
+    # Single choices and scales need an answer. An unticked checkbox or an empty
+    # multi-select is a valid answer ("no" / "none"), so they never block.
+    required = [f for f in fields if f["type"] in ("choice", "scale")]
+    if required:
+        answered = all(f["status"] in ("answered", "ambiguous") for f in required)
+    else:
+        answered = any(f["status"] != "empty" for f in fields)
     if record.get("kind") == "ask":
         answered = next((f["status"] != "empty" for f in fields if f["id"] == "answer"), False)
 

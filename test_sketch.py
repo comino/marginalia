@@ -192,3 +192,38 @@ def test_sketch_and_regions_tools(cloud, monkeypatch):  # noqa: F811
 
 
 from test_workflows import _fake_path, cloud  # noqa: E402, F401
+
+
+def test_two_boxes_sharing_a_corner_stay_two_nodes():
+    a = rect_path(100, 50, 200, 110)
+    b = [(x, y) for x, y in rect_path(100, 50, 200, 110)]
+    b = [(100 + (100 - x), y) for x, y in b]  # mirrored box to the left, same corner
+    d = recognise([S(a), S(b)])
+    assert sorted(n.shape.kind for n in d.nodes) == ["rect", "rect"]
+
+
+def test_arrow_to_diamond_side_attaches():
+    dia = S(diamond_path(300, 100, 40, 30))
+    # Tip on the middle of the upper-left side of the diamond.
+    tip = (280, 85)
+    arrow = S(arrow_in_stroke((150, 85), tip))
+    box = S(rect_path(80, 60, 148, 110))
+    d = recognise([box, dia, arrow])
+    [edge] = d.edges
+    kinds = {n.id: n.shape.kind for n in d.nodes}
+    assert kinds[edge.target] == "diamond" and kinds[edge.source] == "rect"
+
+
+def test_dense_page_is_fast():
+    import time
+
+    strokes = []
+    for row in range(40):
+        for col in range(10):
+            strokes += [
+                S(p) for p in _handwriting(20 + col * 40, 20 + row * 14, words=1, word_w=14, h=5)
+            ]
+    strokes += [S(line_path((10, 10 + 30 * i), (400, 12 + 30 * i))) for i in range(20)]
+    t0 = time.time()
+    recognise(strokes)
+    assert time.time() - t0 < 3.0

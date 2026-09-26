@@ -187,20 +187,26 @@ async def remarkable_inbox(
         if e.cancelled and stored["status"] != "done":
             stored["status"] = "cancelled"
             cancelled.add(stored["id"])
+        elif not e.cancelled and stored["status"] == "cancelled":
+            stored["status"] = "pending"  # the strike-through was erased
+            reopened.add(stored["id"])
         stored["page"] = e.page
         current.append((stored, e))
 
     wanted = [(s, e) for s, e in current if not pending_only or s["status"] == "pending"]
-    crops = {s["id"]: handwriting.render_strokes_png(e.strokes, e.rect) for s, e in wanted}
-    ink_of = {s["id"]: e.strokes for s, e in wanted}
-    todo = [sid for sid in crops if not known[sid].get("text")]
-    results = await asyncio.to_thread(
-        handwriting.transcribe_many,
-        [crops[sid] for sid in todo],
-        handwriting.backend(),
-        50.0,
-        [ink_of[sid] for sid in todo],
-    )
+
+    def transcribe():
+        crops = {s["id"]: handwriting.render_strokes_png(e.strokes, e.rect) for s, e in wanted}
+        ink_of = {s["id"]: e.strokes for s, e in wanted}
+        todo = [sid for sid in crops if not known[sid].get("text")]
+        texts = handwriting.transcribe_many(
+            [crops[sid] for sid in todo],
+            handwriting.backend(),
+            strokes=[ink_of[sid] for sid in todo],
+        )
+        return crops, todo, texts
+
+    crops, todo, results = await asyncio.to_thread(transcribe)
     for sid, (text, _engine) in zip(todo, results):
         if text:
             known[sid]["text"] = text
