@@ -212,16 +212,22 @@ remarkable_sketch("Architecture ideas", page=2, region=[40, 300, 420, 560])
 
 Recognition is purely geometric:
 
-- **Nodes.** Each outline is simplified with Ramer–Douglas–Peucker, and its
-  corners are counted: 4 corners make a rectangle, or a diamond when the
-  corners sit at the side midpoints; 3 make a triangle; a smooth closed curve
-  is an ellipse. A box drawn in several strokes is joined up by its endpoints.
-- **Edges.** Open strokes are lines. An arrowhead drawn in the same stroke, or
-  as a separate small V at one end, makes the line an arrow. Each end snaps to
-  the nearest shape boundary.
-- **Labels.** Handwriting inside a shape names it; handwriting next to a line
-  names the edge.
-- **Ignored.** Lines that touch no shape, and loops back onto their own shape,
+- **Nodes.** A closed outline becomes whichever shape its ink fits best:
+  rectangle, diamond or ellipse (also slightly rotated), or a triangle. Rounded
+  corners, corner flicks and the tablet's own shape snapping don't matter. A
+  box drawn in several strokes is joined up by its endpoints; a narrow
+  "outline" closed by tall letters in the middle of a written line is not a box.
+- **Edges.** Open, smooth strokes are lines (a joined-up word is writing, however
+  long). An arrowhead drawn in the same stroke, or as a separate head at one
+  end (a V, a triangle, a filled head, drawn around the end or ahead of it),
+  makes the line an arrow. Each end snaps to the nearest shape boundary, or
+  else to a note it points at.
+- **Labels and notes.** Handwriting inside a shape (or mostly inside, like a
+  closing "?" over its edge) names it; handwriting next to a line names the
+  edge. Everything else is `free_text`, one note per written line, each with an
+  id (`t1`, `t2`, ...) that edges can point at: `{"from": "n1", "to": "t1"}`,
+  drawn in Mermaid as a flag-shaped node.
+- **Ignored.** Lines that touch nothing, and loops back onto their own shape,
   are dropped; they are usually underlines or doubled outlines.
 
 `include_svg=true` returns a clean redraw, and `include_images=true` also
@@ -261,7 +267,10 @@ content element.
 
 The reMarkable sync service pushes a `SyncComplete` notification over a
 websocket (`wss://…/notifications/ws/json/1`) every time the tablet syncs.
-While you write, that happens every few seconds. The watcher keeps a snapshot
+The tablet uploads a document when you close it (or leave the page), not while
+the pen is moving, so "live" means: close the document and the agent sees the
+change within seconds. (Stroke-by-stroke streaming would need reMarkable's
+Screen Share, which is a separate, undocumented channel.) The watcher keeps a snapshot
 of every document's per-page stroke-file hashes, taken from metadata only, and
 compares it against a fresh one after each notification. The result is a
 stream of events: *document X, pages Y got new ink*.

@@ -103,8 +103,10 @@ async def remarkable_live_watch(
     """
     <usecase>Wait for the user to write or draw on the tablet, then see what changed.</usecase>
     <instructions>
-    Follows the tablet near-live: the reMarkable cloud notifies every sync (the
-    tablet syncs every few seconds while you write). Blocks until ink changes -
+    Follows the tablet: the reMarkable cloud notifies every sync. The tablet
+    uploads a document when the user closes it (or leaves the page), not while
+    the pen is moving - so ask the user to close the document when they want
+    you to look. Blocks until ink changes -
     on `document` if given, else anywhere - waits `settle` seconds for the
     user to pause, then returns the changed pages with:
     - "annotations" on PDFs (strikes, circles, notes anchored to text),

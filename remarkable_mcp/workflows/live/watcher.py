@@ -1,11 +1,12 @@
 """Near-live change stream from the reMarkable cloud.
 
 The sync service pushes a ``SyncComplete`` notification over a websocket every
-time a device finishes a sync (while you write, the tablet syncs every few
-seconds). A notification does not say *what* changed, so the watcher keeps a
-metadata snapshot - per document, the hash of every stroke file - and diffs it
-after each notification. The result is a stream of ``Change`` events naming
-the document and the exact pages that got new ink.
+time a device finishes a sync (the tablet uploads a document when it is
+closed or the page is left, not stroke by stroke). A notification does not
+say *what* changed, so the watcher keeps a metadata snapshot - per document,
+the hash of every stroke file - and diffs it after each notification. The
+result is a stream of ``Change`` events naming the document and the exact
+pages that got new ink.
 
 Protocol (as used by the official apps and rmapi-js)::
 
@@ -35,8 +36,8 @@ logger = logging.getLogger(__name__)
 NOTIFICATIONS_PATH = "/notifications/ws/json/1"
 POLL_SECONDS = 60.0
 # The sync API rate-limits (HTTP 429, ~30 requests per short window, shared by
-# every client of the account). While someone writes, the tablet syncs every
-# few seconds; refreshes are coalesced to one per window, and a sync that
+# every client of the account). Syncs can come in bursts (several documents
+# closed in a row, other devices); refreshes are coalesced to one per window, and a sync that
 # arrives during a refresh schedules another, so the last change of a burst is
 # never missed.
 MIN_REFRESH_SECONDS = 10.0

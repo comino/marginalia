@@ -254,3 +254,102 @@ def test_a_single_box_is_returned_by_the_sketch_tool(cloud, monkeypatch):  # noq
     )
     data = _json_of(asyncio.run(sketch_tools.remarkable_sketch("One box")))
     assert [n["shape"] for n in data["nodes"]] == ["rect"] and data["edges"] == []
+
+
+# --------------------------------------------------------------------------- live test findings
+# Shapes of a real page from a live test (handwriting, a box with a question,
+# an arrow to a note), synthesised - the user's ink stays out of the repo.
+
+
+def _word(x, y, w, h=12.0, n=40):
+    """A handwritten word: small loops along a baseline at y."""
+    return [
+        (
+            x + w * i / (n - 1) + 1.5 * math.cos(8 * math.pi * i / (n - 1)),
+            y - h / 2 - h / 2 * math.sin(8 * math.pi * i / (n - 1)),
+        )
+        for i in range(n)
+    ]
+
+
+def _big_letters_line(x=180.0, base=84.0):
+    """ "He" + a tall double-l whose two strokes close into a narrow outline + "o"."""
+    he = [
+        S([(x, base), (x + 1, base - 31)]),
+        S([(x + 9, base), (x + 10, base - 31)]),
+        S([(x, base - 15), (x + 10, base - 15)]),
+        S(_word(x + 14, base, 14)),
+    ]
+    lx = x + 32
+    ll = [
+        S([(lx, base), (lx + 1, base - 31), (lx + 11, base - 24)]),
+        S([(lx + 11, base - 24), (lx + 10, base), (lx, base)]),
+    ]
+    rest = [S(_word(lx + 16, base, 14)), S([(lx + 34, base + 2), (lx + 33, base + 6)])]
+    return he + ll + rest
+
+
+def test_tall_letters_that_close_an_outline_are_not_a_box():
+    strokes = _big_letters_line()
+    d = recognise(strokes)
+    assert d.nodes == [] and d.edges == []
+    assert sum(len(lab.strokes) for lab in d.free_text) == len(strokes)  # no ink lost
+
+
+def test_head_drawn_ahead_of_the_line_end_makes_it_directed():
+    box = S(rect_path(200, 176, 400, 232))
+    # curve from the box's right side, up and back left, ending at (411, 130)
+    bends = [
+        (396, 188),
+        (432, 176),
+        (450, 161),
+        (452, 150),
+        (446, 138),
+        (432, 130),
+        (422, 128),
+        (411, 130),
+    ]
+    curve = [
+        (a[0] + (b[0] - a[0]) * t / 6, a[1] + (b[1] - a[1]) * t / 6)
+        for a, b in zip(bends, bends[1:])
+        for t in range(6)
+    ] + [bends[-1]]
+    # the head: drawn from the line's end on to a tip further left, and back
+    head = [(410, 129), (406, 128), (398, 134), (404, 137), (414, 133), (411, 130)]
+    [edge] = recognise([box, S(curve), S(head)]).edges
+    assert edge.directed and edge.source == "n1"
+    assert edge.shape.tip_end is not None and edge.shape.tip_end[0] < 400
+
+
+def test_arrow_to_a_note_targets_the_note():
+    box = S(rect_path(200, 176, 400, 232))
+    shaft = S(line_path((300, 174), (300, 138)))
+    head = S([(294, 146), (300, 137), (306, 146)])
+    note = [S(_word(250, 128, 30)), S(_word(290, 128, 34))]  # "Can you" "see this?"
+    d = recognise([box, shaft, head, *note])
+    [edge] = d.edges
+    assert edge.directed and edge.source == "n1" and edge.target == "t1"
+    [text] = d.free_text
+    # the line's words (each one joined-up stroke, as long as a connector) form one note
+    assert text.id == "t1" and len(text.strokes) == 2
+    mermaid = to_mermaid(d)
+    assert 't1>"t1"]' in mermaid and "n1 --> t1" in mermaid
+    assert summary(d)["free_text"][0]["id"] == "t1"
+
+
+def test_question_mark_over_the_box_edge_labels_the_box():
+    box = S(rect_path(200, 176, 400, 232))
+    words = [S(_word(215, 212, 40)), S(_word(265, 212, 40))]
+    qmark = S([(393, 196), (399, 192), (405, 197), (399, 205), (399, 210)])  # over the edge
+    d = recognise([box, *words, qmark])
+    [node] = d.nodes
+    assert node.label is not None and len(node.label.strokes) == 3
+    assert d.edges == [] and d.free_text == []
+
+
+def test_letters_in_a_note_are_not_edges():
+    """Tall straight letters count as shape strokes; in a note they stay text."""
+    strokes = _big_letters_line() + [S([(205, 84), (206, 53)]), S([(243, 84), (242, 52)])]
+    d = recognise(strokes)
+    assert d.edges == [] and d.loose_lines == 0
+    assert sum(len(lab.strokes) for lab in d.free_text) == len(strokes)

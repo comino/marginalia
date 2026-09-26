@@ -99,6 +99,9 @@ class Shape:
     points: List[Point] = field(default_factory=list)  # simplified outline / polyline
     head_at_end: bool = False  # arrows: arrowhead at points[-1]
     head_at_start: bool = False
+    # Where a separately drawn head points, when it reaches past the line's end.
+    tip_end: Optional[Point] = None
+    tip_start: Optional[Point] = None
 
     @property
     def is_node(self) -> bool:
@@ -110,6 +113,7 @@ class Label:
     strokes: List[Stroke]
     rect: Rect
     text: Optional[str] = None
+    id: Optional[str] = None  # free text only (t1, t2, ...): edges can point at it
 
 
 @dataclass
@@ -411,22 +415,36 @@ def _v_tip(stroke: Stroke) -> Optional[List[Point]]:
     return None
 
 
-def _points_back_along(stroke: Stroke, line: Shape, at_end: bool) -> bool:
-    """The head's ink lies behind the tip, around the shaft - not beside it."""
+def _loose_head_tip(stroke: Stroke, line: Shape, at_end: bool) -> Optional[Point]:
+    """Where an untidy or filled head at this end of ``line`` points, or None.
+
+    Two ways to draw one: around the line's end (the ink lies behind the end,
+    on the shaft), or ahead of it - the line stops at the head's base and the
+    head, touching that end, continues along the line. Ink beside the end (a
+    letter of a label) is neither.
+    """
     pts = line.points if at_end else list(reversed(line.points))
-    tip, before = pts[-1], pts[-2]
-    ux, uy = tip[0] - before[0], tip[1] - before[1]
+    end, before = pts[-1], pts[-2]
+    ux, uy = end[0] - before[0], end[1] - before[1]
     n = math.hypot(ux, uy) or 1e-6
     ux, uy = ux / n, uy / n
     mx = sum(p[0] for p in stroke.points) / len(stroke.points)
     my = sum(p[1] for p in stroke.points) / len(stroke.points)
-    along = (mx - tip[0]) * ux + (my - tip[1]) * uy
-    across = abs(-(mx - tip[0]) * uy + (my - tip[1]) * ux)
-    return along < 0 and across < 0.5 * -along
+    along = (mx - end[0]) * ux + (my - end[1]) * uy
+    across = abs(-(mx - end[0]) * uy + (my - end[1]) * ux)
+    if along < 0 and across < 0.5 * -along:
+        return end
+    size = max(stroke.bbox[2] - stroke.bbox[0], stroke.bbox[3] - stroke.bbox[1])
+    touches = min(math.dist(p, end) for p in stroke.points) <= max(2.5, 0.2 * size)
+    if touches and along > 0 and across < max(0.8 * along, 0.25 * size):
+        return max(stroke.points, key=lambda p: (p[0] - end[0]) * ux + (p[1] - end[1]) * uy)
+    return None
 
 
-def _is_arrowhead(stroke: Stroke, line: Shape, tip: Optional[List[Point]]) -> Optional[bool]:
-    """A small V next to one end of ``line``: returns True (end) / False (start) / None."""
+def _is_arrowhead(
+    stroke: Stroke, line: Shape, tip: Optional[List[Point]]
+) -> Optional[Tuple[bool, Point]]:
+    """A small head next to one end of ``line``: (at_end, where it points), or None."""
     sx0, sy0, sx1, sy1 = stroke.bbox
     size = max(sx1 - sx0, sy1 - sy0)
     if tip is None or size > 0.5 * _path_length(line.points):
@@ -435,12 +453,92 @@ def _is_arrowhead(stroke: Stroke, line: Shape, tip: Optional[List[Point]]) -> Op
     reach = max(6.0, 0.8 * size)
     d_end = min(math.dist(t, end) for t in tip)
     d_start = min(math.dist(t, start) for t in tip)
-    loose = len(tip) > 3  # untidy or filled head: check it sits behind the tip
     if d_end <= reach and d_end <= d_start:
-        return True if not loose or _points_back_along(stroke, line, True) else None
-    if d_start <= reach:
-        return False if not loose or _points_back_along(stroke, line, False) else None
-    return None
+        at_end = True
+    elif d_start <= reach:
+        at_end = False
+    else:
+        return None
+    anchor = end if at_end else start
+    if len(tip) > 3:  # untidy or filled head: it must sit on the line's axis
+        point = _loose_head_tip(stroke, line, at_end)
+        return (at_end, point) if point is not None else None
+    return at_end, min(tip, key=lambda t: math.dist(t, anchor))
+
+
+def _is_letter_in_text(shape: Shape, writing: Sequence[Stroke], ends: Sequence[Point]) -> bool:
+    """A "shape" in the middle of a line of handwriting is part of a word.
+
+    Tall straight letters (l, H, 1) are long enough to count as shape
+    strokes, and two of them can close into a narrow outline. A real node
+    holds its label inside or has connectors; this has neither, and letters
+    on both sides at the same height.
+    """
+    x0, y0, x1, y1 = shape.rect
+    h = y1 - y0
+    for s in writing:
+        cx, cy = (s.bbox[0] + s.bbox[2]) / 2, (s.bbox[1] + s.bbox[3]) / 2
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            return False  # a label inside
+    if any(_node_boundary_distance(p, shape) <= 14 for p in ends):
+        return False
+    left = right = False
+    for s in writing:
+        sx0, sy0, sx1, sy1 = s.bbox
+        if min(y1, sy1) - max(y0, sy0) < 0.5 * min(h, sy1 - sy0):
+            continue  # not on the same line
+        if sx0 < x0 and -0.3 * h <= x0 - sx1 <= 0.6 * h:
+            left = True
+        if sx1 > x1 and -0.3 * h <= sx0 - x1 <= 0.6 * h:
+            right = True
+    return left and right
+
+
+def _is_cursive(points: Sequence[Point]) -> bool:
+    """Joined-up handwriting: the pen keeps turning sharply (loops, arches),
+    where a connector - straight or curved - runs smoothly."""
+    simple = rdp(points, 1.0)
+    sharp = sum(
+        1
+        for i in range(1, len(simple) - 1)
+        if _angle(simple[i - 1], simple[i], simple[i + 1]) < 100
+    )
+    return sharp >= 4
+
+
+def _inside(p: Point, r: Rect, margin: float = 0.0) -> bool:
+    return r[0] + margin < p[0] < r[2] - margin and r[1] + margin < p[1] < r[3] - margin
+
+
+def _merge_text_lines(labels: List[Label]) -> List[Label]:
+    """Words written on one line form one note (word gaps are wider than the
+    letter gaps the stroke clustering bridges)."""
+    out: List[Label] = []
+    for lab in sorted(labels, key=lambda lab: lab.rect[0]):
+        h = lab.rect[3] - lab.rect[1]
+        for other in out:
+            oh = other.rect[3] - other.rect[1]
+            overlap = min(lab.rect[3], other.rect[3]) - max(lab.rect[1], other.rect[1])
+            gap = lab.rect[0] - other.rect[2]
+            if overlap >= 0.5 * min(h, oh) and gap <= 1.5 * max(h, oh):
+                other.strokes = sorted(other.strokes + lab.strokes, key=lambda s: s.index)
+                other.rect = _union([other.rect, lab.rect])
+                break
+        else:
+            out.append(Label(list(lab.strokes), lab.rect, lab.text))
+    return out
+
+
+def _area(r: Rect) -> float:
+    return max(r[2] - r[0], 0.0) * max(r[3] - r[1], 0.0)
+
+
+def _overlap_share(inner: Rect, outer: Rect) -> float:
+    """Share of ``inner``'s area that lies inside ``outer``."""
+    w = min(inner[2], outer[2]) - max(inner[0], outer[0])
+    h = min(inner[3], outer[3]) - max(inner[1], outer[1])
+    area = max((inner[2] - inner[0]) * (inner[3] - inner[1]), 1e-6)
+    return max(w, 0.0) * max(h, 0.0) / area
 
 
 def _node_boundary_distance(p: Point, shape: Shape) -> float:
@@ -503,8 +601,8 @@ def recognise(
     for group in _merge_open_strokes(big, gap=6.0):
         path = _ordered_chain(group) if len(group) > 1 else list(group[0].points)
         shape = classify_outline(path, group)
-        if shape is None:
-            small.extend(group)
+        if shape is None or (shape.kind == "line" and _is_cursive(path)):
+            small.extend(group)  # a joined-up word is as long as a connector
             continue
         if shape.kind in ("line", "arrow") and len(group) > 1:
             # Chaining only makes sense for closed outlines; classify parts alone.
@@ -537,18 +635,26 @@ def recognise(
         near = [c for p, c in ends if rect_distance(s.bbox, (p[0], p[1], p[0], p[1])) <= reach]
         tip = _v_tip(s) if near else None
         for c in {id(c): c for c in near}.values():
-            side = _is_arrowhead(s, c, tip)
-            if side is not None:
+            head = _is_arrowhead(s, c, tip)
+            if head is not None:
+                at_end, point = head
                 c.kind = "arrow"
                 c.strokes.append(s)
-                if side:
-                    c.head_at_end = True
+                if at_end:
+                    c.head_at_end, c.tip_end = True, point
                 else:
-                    c.head_at_start = True
+                    c.head_at_start, c.tip_start = True, point
                 claimed = True
                 break
         if not claimed:
             writing.append(s)
+
+    # Letters that closed into an outline go back to the writing.
+    connector_ends = [p for p, _c in ends]
+    for shape in [s for s in shapes if s.is_node]:
+        if _is_letter_in_text(shape, writing, connector_ends):
+            shapes.remove(shape)
+            writing.extend(shape.strokes)
 
     labels: List[Label] = []
     if writing:
@@ -562,11 +668,40 @@ def recognise(
             sorted((s for s in shapes if s.is_node), key=lambda s: (s.rect[1], s.rect[0]))
         )
     ]
+    # A label belongs to the smallest box that holds its centre or most of it
+    # (the "?" closing a boxed question often hangs over the box's edge).
+    owned: set = set()
+    by_area = sorted(
+        nodes,
+        key=lambda n: (n.shape.rect[2] - n.shape.rect[0]) * (n.shape.rect[3] - n.shape.rect[1]),
+    )
+    for lab in labels:
+        cx, cy = (lab.rect[0] + lab.rect[2]) / 2, (lab.rect[1] + lab.rect[3]) / 2
+        owner = next(
+            (
+                n
+                for n in by_area
+                if (
+                    n.shape.rect[0] <= cx <= n.shape.rect[2]
+                    and n.shape.rect[1] <= cy <= n.shape.rect[3]
+                )
+                or _overlap_share(lab.rect, n.shape.rect) >= 0.5
+            ),
+            None,
+        )
+        if owner is not None:
+            owner.label = _merge_label(owner.label, lab)
+            owned.add(id(lab))
+    texts = _merge_text_lines([lab for lab in labels if id(lab) not in owned])
+
     edges: List[Edge] = []
+    text_ends: Dict[int, List[Optional[Label]]] = {}  # id(edge) -> [source text, target text]
     for c in (s for s in shapes if not s.is_node):
         ends = [c.points[0], c.points[-1]]
+        tips = [c.tip_start or c.points[0], c.tip_end or c.points[-1]]
         attached: List[Optional[str]] = []
-        for p in ends:
+        to_text: List[Optional[Label]] = []
+        for p, t in zip(ends, tips):
             # A shape lies inside its box, so nodes whose box is far away can't attach.
             near = [
                 n
@@ -577,35 +712,53 @@ def recognise(
             best = min(near, key=lambda n: _node_boundary_distance(p, n.shape), default=None)
             if best is not None and _node_boundary_distance(p, best.shape) <= 14:
                 attached.append(best.id)
-            else:
-                attached.append(None)
+                to_text.append(None)
+                continue
+            attached.append(None)
+            # No shape here: an arrow may point at a note instead - from outside
+            # it (a letter's ends lie inside its word), aimed from a little away.
+            reach = 24.0 if t is not p else 14.0  # a drawn head reaches further
+            note = min(texts, key=lambda lab: rect_distance(lab.rect, (*t, *t)), default=None)
+            ok = (
+                note is not None
+                and rect_distance(note.rect, (*t, *t)) <= reach
+                and not _inside(p, note.rect, margin=2.0)
+            )
+            to_text.append(note if ok else None)
         src, dst = attached
         directed = c.kind == "arrow"
         if c.head_at_start and not c.head_at_end:
             src, dst = dst, src
+            to_text.reverse()
         if src is not None and src == dst:
             continue  # loops back onto its own shape: a doubled outline, not an edge
-        edges.append(Edge(src, dst, c, directed))
+        edge = Edge(src, dst, c, directed)
+        edges.append(edge)
+        text_ends[id(edge)] = to_text
 
-    free: List[Label] = []
-    for lab in labels:
-        cx, cy = (lab.rect[0] + lab.rect[2]) / 2, (lab.rect[1] + lab.rect[3]) / 2
-        owner = next(
-            (
-                n
-                for n in sorted(
-                    nodes,
-                    key=lambda n: (n.shape.rect[2] - n.shape.rect[0])
-                    * (n.shape.rect[3] - n.shape.rect[1]),
-                )
-                if n.shape.rect[0] <= cx <= n.shape.rect[2]
-                and n.shape.rect[1] <= cy <= n.shape.rect[3]
-            ),
-            None,
-        )
-        if owner is not None:
-            owner.label = _merge_label(owner.label, lab)
+    # Strokes that touch no shape but lie within a note (or, plain, right at
+    # its edge) are its letters - tall straight letters count as shape
+    # strokes: give them back to the text.
+    for e in list(edges):
+        if e.source or e.target:
             continue
+        home = next((lab for lab in texts if _overlap_share(e.shape.rect, lab.rect) >= 0.5), None)
+        if home is None and not e.directed and not any(text_ends[id(e)]):
+            home = next(
+                (lab for lab in texts if rect_distance(lab.rect, e.shape.rect) <= 3.0), None
+            )
+        if home is not None:
+            home.strokes = sorted(home.strokes + e.shape.strokes, key=lambda s: s.index)
+            home.rect = _union([home.rect, e.shape.rect])
+            edges.remove(e)
+
+    targets = {id(lab) for e in edges for lab in text_ends[id(e)] if lab is not None}
+    free: List[Label] = []
+    for lab in texts:
+        if id(lab) in targets:
+            free.append(lab)  # a note an arrow points at stays a note of its own
+            continue
+        cx, cy = (lab.rect[0] + lab.rect[2]) / 2, (lab.rect[1] + lab.rect[3]) / 2
         near = min(
             edges,
             key=lambda e: _min_segment_distance((cx, cy), e.shape.points),
@@ -621,13 +774,38 @@ def recognise(
     kept: List[Edge] = []
     loose = 0
     for e in edges:
-        ends = (e.source is not None) + (e.target is not None)
+        src_text, dst_text = text_ends[id(e)]
+        ends = sum(x is not None for x in (e.source or src_text, e.target or dst_text))
         if ends == 2 or (ends == 1 and (e.directed or e.label is not None)):
             kept.append(e)
         else:
             loose += 1
             if e.label is not None:
                 free.append(e.label)
+    # A dot or accent inside another note's area (the "?" dot) belongs to it.
+    for lab in sorted(free, key=lambda lab: _area(lab.rect)):
+        home = next(
+            (
+                o
+                for o in free
+                if o is not lab
+                and _area(o.rect) > _area(lab.rect)
+                and _overlap_share(lab.rect, o.rect) >= 0.8
+            ),
+            None,
+        )
+        if home is not None and id(lab) not in targets:
+            home.strokes = sorted(home.strokes + lab.strokes, key=lambda s: s.index)
+            free.remove(lab)
+    free.sort(key=lambda lab: (lab.rect[1], lab.rect[0]))
+    for k, lab in enumerate(free, start=1):
+        lab.id = f"t{k}"
+    for e in kept:
+        src_text, dst_text = text_ends[id(e)]
+        if e.source is None and src_text is not None:
+            e.source = src_text.id
+        if e.target is None and dst_text is not None:
+            e.target = dst_text.id
     all_rects = (
         [n.shape.rect for n in nodes] + [e.shape.rect for e in kept] + [lab.rect for lab in labels]
     )
@@ -668,6 +846,11 @@ def to_mermaid(d: Diagram) -> str:
     for n in d.nodes:
         o, c = shapes.get(n.shape.kind, ('["', '"]'))
         lines.append(f"    {n.id}{o}{_mermaid_text(n.label.text if n.label else None, n.id)}{c}")
+    # Notes an arrow points at, drawn as flag-shaped nodes.
+    pointed = {x for e in d.edges for x in (e.source, e.target) if x}
+    for lab in d.free_text:
+        if lab.id in pointed:
+            lines.append(f'    {lab.id}>"{_mermaid_text(lab.text, lab.id)}"]')
     loose = 0
     for e in d.edges:
         src, dst = e.source, e.target
@@ -732,7 +915,9 @@ def to_svg(d: Diagram, pad: float = 12.0) -> str:
             out.append(closed(n.shape.points))
     for e in d.edges:
         pts = e.shape.points
-        a, b = pts[0], pts[-1]
+        # a head drawn past the line's end: the arrow reaches its tip
+        a = e.shape.tip_start or pts[0]
+        b = e.shape.tip_end or pts[-1]
         out.append(f'<path d="M{pt(a)} L{pt(b)}"/>')
         if e.shape.head_at_end:
             out.append(head(b, a))
@@ -778,5 +963,8 @@ def summary(d: Diagram) -> Dict[str, object]:
             }
             for e in d.edges
         ],
-        "free_text": [label_text(lab) for lab in d.free_text],
+        "free_text": [
+            {"id": lab.id, "text": lab.text, "rect": [round(v, 1) for v in lab.rect]}
+            for lab in d.free_text
+        ],
     }
