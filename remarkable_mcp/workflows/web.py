@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import quote
 
+from remarkable_mcp.workflows.safety import fetch_public
+
 _UA = "Mozilla/5.0 (X11; Linux aarch64) remarkable-mcp reading-queue"
 
 
@@ -27,11 +29,12 @@ class Article:
     extractor: str = "fallback"
 
 
-def fetch_html(url: str, timeout: float = 20.0) -> str:
-    import requests
+MAX_PAGE_BYTES = 10_000_000
 
-    resp = requests.get(url, headers={"User-Agent": _UA}, timeout=timeout)
-    resp.raise_for_status()
+
+def fetch_html(url: str, timeout: float = 20.0) -> str:
+    """Fetch a public web page (no local/private addresses, capped size)."""
+    resp = fetch_public(url, {"User-Agent": _UA}, timeout, MAX_PAGE_BYTES)
     # requests assumes ISO-8859-1 for text/* without a charset; most pages are UTF-8.
     if "charset" not in resp.headers.get("Content-Type", "").lower():
         resp.encoding = resp.apparent_encoding or "utf-8"

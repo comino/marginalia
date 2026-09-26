@@ -128,23 +128,29 @@ def test_page_without_article_text_is_rejected(monkeypatch):
 
 
 def test_utf8_page_without_charset_header(monkeypatch):
+    import io
+
+    import requests
+
     body = "<html><body><p>Grüße aus München</p></body></html>".encode()
 
-    class Resp:
-        headers = {"Content-Type": "text/html"}
-        content = body
-        encoding = None
-        apparent_encoding = "utf-8"
+    def fake_get(url, **kw):
+        resp = requests.Response()
+        resp.status_code = 200
+        resp.headers["Content-Type"] = "text/html"  # no charset: requests would guess latin-1
+        resp.raw = io.BytesIO(body)
+        resp.url = url
+        return resp
 
-        def raise_for_status(self):
-            pass
-
-        @property
-        def text(self):
-            return self.content.decode(self.encoding or "iso-8859-1")
-
-    monkeypatch.setattr("requests.get", lambda *a, **k: Resp())
+    monkeypatch.setattr(
+        web, "fetch_public", lambda url, headers, timeout, cap: _fetched(fake_get(url))
+    )
     assert "Grüße aus München" in web.fetch_html("https://example.com")
+
+
+def _fetched(resp):
+    resp._content = resp.raw.read()
+    return resp
 
 
 def test_reading_notes_mark_seen_false_keeps_marks_new(cloud):  # noqa: F811

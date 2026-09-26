@@ -98,15 +98,19 @@ def validate_fields(fields: Sequence[dict]) -> List[dict]:
             seen.add(fid)
             f["id"] = fid
         if ftype == "image":
-            if f.get("png") is None:
-                path = f.get("path")
-                if not path:
-                    raise FormSpecError(f"Field {n}: image fields need 'path'.")
+            # Image bytes can only come from the server itself (e.g. a crop of
+            # the user's mark); callers pass a path, which is vetted.
+            if not isinstance(f.get("png"), (bytes, bytearray)):
+                f.pop("png", None)
+                from remarkable_mcp.workflows.safety import UnsafeInput, check_local_file
+
                 try:
-                    with open(path, "rb") as fh:
-                        f["png"] = fh.read()
-                except OSError as exc:
-                    raise FormSpecError(f"Field {n}: cannot read image {path!r}: {exc}") from exc
+                    path = check_local_file(
+                        str(f.get("path") or ""), (".png", ".jpg", ".jpeg"), 10_000_000, "image"
+                    )
+                except UnsafeInput as exc:
+                    raise FormSpecError(f"Field {n}: {exc}") from exc
+                f["png"] = path.read_bytes()
         if ftype in ("choice", "multi"):
             opts = [str(o) for o in f.get("options") or []]
             if len(opts) < 2:

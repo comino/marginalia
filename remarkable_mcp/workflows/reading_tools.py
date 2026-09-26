@@ -14,6 +14,7 @@ from remarkable_mcp.workflows import cloud, handwriting
 from remarkable_mcp.workflows.ink import load_document_ink_from_zip
 from remarkable_mcp.workflows.review import collect_requests
 from remarkable_mcp.workflows.review_pdf import render_review_pdf
+from remarkable_mcp.workflows.safety import UnsafeInput
 from remarkable_mcp.workflows.state import Store, now_iso, slugify
 from remarkable_mcp.workflows.web import (
     Article,
@@ -108,6 +109,8 @@ async def remarkable_clip(
         )
     try:
         art, rendered, doc = await asyncio.to_thread(work)
+    except UnsafeInput as exc:
+        return make_error("url_refused", str(exc), "Only public http(s) pages can be clipped.")
     except NoArticleText as exc:
         return make_error("no_article_text", str(exc), "Pass markdown= with the article text.")
     except Exception as exc:

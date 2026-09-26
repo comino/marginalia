@@ -66,9 +66,12 @@ async def remarkable_latex_review_send(
     - remarkable_latex_review_send("/home/me/thesis/thesis.pdf", title="Thesis draft 3")
     </examples>
     """
-    pdf = Path(pdf_path).expanduser().resolve()
-    if not pdf.is_file():
-        return make_error("file_not_found", f"No such PDF: {pdf_path}", "Pass the compiled PDF.")
+    from remarkable_mcp.workflows.safety import UnsafeInput, check_local_file
+
+    try:
+        pdf = check_local_file(pdf_path, (".pdf",), 300_000_000, "PDF")
+    except UnsafeInput as exc:
+        return make_error("invalid_pdf", str(exc), "Pass the compiled PDF.")
     sync = synctex_file(pdf)
     if sync is None:
         return make_error(

@@ -171,13 +171,16 @@ async def remarkable_review_send(
             "Pass source_path='/path/to/draft.md' for a file on disk.",
         )
     if source_path:
-        path = Path(source_path).expanduser()
-        if not path.is_file():
-            return make_error(
-                "file_not_found", f"No such file: {source_path}", "Pass an absolute path."
+        from remarkable_mcp.workflows.safety import UnsafeInput, check_local_file
+
+        try:
+            path = check_local_file(
+                source_path, (".md", ".markdown", ".mdx", ".txt"), 2_000_000, "draft"
             )
-        text = path.read_text()
-        source_path = str(path.resolve())
+        except UnsafeInput as exc:
+            return make_error("invalid_source", str(exc), "Pass the path of a Markdown draft.")
+        text = path.read_text(errors="replace")
+        source_path = str(path)
     else:
         text = markdown or ""
 

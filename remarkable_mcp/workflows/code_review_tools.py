@@ -65,6 +65,9 @@ def _get_diff(pr, repo, repo_path, base, paths) -> str:
     else:
         if not repo_path:
             raise ValueError("Pass pr= (GitHub) or repo_path= (local git diff).")
+        from remarkable_mcp.workflows.safety import check_local_dir
+
+        repo_path = str(check_local_dir(repo_path, "repository"))
         if not _REF.fullmatch(base) or base.startswith("-"):
             raise ValueError(f"Not a valid git ref: {base!r}")
         cmd = [
