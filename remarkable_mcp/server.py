@@ -360,11 +360,15 @@ from remarkable_mcp import write_tools as _write_tools  # noqa: E402
 if _write_tools.write_enabled():
     _write_tools.register_write_tools()
 
+# Workflow tools (review round-trips, ink analysis). Sending needs write mode.
+# The module registers its tools on import (see _register_on_import), which
+# keeps import order irrelevant for the tools <-> server cycle.
 # Register the interactive MCP App canvas (remarkable_canvas + ui:// resource).
 # There is no feature flag: app-capable clients (those advertising the MCP Apps
 # UI extension at initialize) open an interactive viewer, while other clients
 # ignore the UI metadata and receive the rendered page as an embedded image.
 from remarkable_mcp import app_canvas as _app_canvas  # noqa: E402
+from remarkable_mcp.workflows import tools as _workflow_tools  # noqa: E402, F401
 
 _app_canvas.register_app_tools()
 
