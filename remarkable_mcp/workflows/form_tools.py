@@ -71,7 +71,7 @@ def _send(title: str, fields: list, intro: str, folder: str, kind: str) -> str:
         "doc_id": doc.id,
         "folder": folder,
         "sent_at": now_iso(),
-        "ink_at_send": cloud.ink_token(doc),
+        "ink_at_send": cloud.EMPTY_INK,  # a fresh upload has no strokes
         "manifest": rendered.manifest(),
     }
     _forms().put(form_id, record)

@@ -128,7 +128,7 @@ async def remarkable_clip(
             "doc_name": art.title[:90],
             "folder": folder,
             "sent_at": now_iso(),
-            "ink_at_send": cloud.ink_token(doc),
+            "ink_at_send": cloud.EMPTY_INK,  # a fresh upload has no strokes
             "blocks": rendered.manifest_blocks(),
             "layout": rendered.layout,
             "source_text": art.markdown,

@@ -487,7 +487,8 @@ class FakeCloud:
     def upload_document(self, content, name, file_type, parent_id="", orientation="portrait"):
         doc = self._doc(str(uuid.uuid4()), name, parent_id)
         self.zips[doc.id] = content
-        return doc
+        # Like the sync client: the returned document has no file index loaded yet.
+        return SimpleNamespace(**{**vars(doc), "files": []})
 
     def annotate(self, doc_id, strokes_by_page):
         self.ink[doc_id] = strokes_by_page

@@ -277,7 +277,7 @@ async def remarkable_review_send(
         "blocks": rendered.manifest_blocks(),
         "source_text": text,
         "source_sha": source_digest(text),
-        "ink_at_send": cloud.ink_token(doc),
+        "ink_at_send": cloud.EMPTY_INK,  # a fresh upload has no strokes
     }
 
     def append(current):
