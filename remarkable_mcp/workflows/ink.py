@@ -139,6 +139,14 @@ class PageInk:
     strokes: List[Stroke] = field(default_factory=list)
     highlights: List[TextHighlight] = field(default_factory=list)
     words: List[Word] = field(default_factory=list)
+    page_id: str = ""  # tablet page uuid (stable when pages are inserted/moved)
+
+    @property
+    def key(self) -> str:
+        """Identity of the page that survives inserting pages on the tablet."""
+        if self.pdf_page is not None:
+            return f"pdf{self.pdf_page + 1}"
+        return f"id:{self.page_id}" if self.page_id else f"page{self.page}"
 
     @property
     def has_ink(self) -> bool:
@@ -209,9 +217,21 @@ def _page_strokes(
 
 
 def _page_words(pdf_doc, pdf_page: int) -> List[Word]:
+    """Words in displayed-page coordinates (the space the ink lives in).
+
+    get_text() reports unrotated coordinates; for pages with /Rotate the
+    rotation matrix maps them onto the page as shown on the tablet.
+    """
+    import fitz
+
+    page = pdf_doc[pdf_page]
+    matrix = page.rotation_matrix if page.rotation else None
     words = []
-    for x0, y0, x1, y1, text, block, line, _wn in pdf_doc[pdf_page].get_text("words"):
-        words.append(Word(text=text, rect=(x0, y0, x1, y1), block=block, line=line))
+    for x0, y0, x1, y1, text, block, line, _wn in page.get_text("words"):
+        rect = fitz.Rect(x0, y0, x1, y1)
+        if matrix is not None:
+            rect = (rect * matrix).normalize()
+        words.append(Word(text=text, rect=tuple(rect), block=block, line=line))
     return words
 
 
@@ -230,7 +250,8 @@ def load_document_ink(extracted: Path, pages: Optional[Iterable[int]] = None) ->
     pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf") if pdf_bytes else None
 
     rm_files = _get_ordered_rm_files(extracted)
-    page_count = len(_get_page_order(extracted)) or len(rm_files)
+    page_order = _get_page_order(extracted)
+    page_count = len(page_order) or len(rm_files)
     if page_count == 0 and pdf_doc is not None:
         page_count = len(pdf_doc)
 
@@ -266,6 +287,7 @@ def load_document_ink(extracted: Path, pages: Optional[Iterable[int]] = None) ->
                     strokes=strokes,
                     highlights=highlights,
                     words=words,
+                    page_id=page_order[page - 1] if page <= len(page_order) else "",
                 )
             )
     finally:

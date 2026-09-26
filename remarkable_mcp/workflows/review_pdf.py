@@ -102,13 +102,21 @@ def split_front_matter(source: str) -> Tuple[Dict[str, str], str, int]:
 
 
 def _plain(tokens) -> str:
+    """Plain text of a token run; stops at a nested list (its items are own blocks)."""
     parts = []
+    is_item = bool(tokens) and tokens[0].type == "list_item_open"
     for t in tokens:
+        if is_item and t.type in ("bullet_list_open", "ordered_list_open"):
+            break
         if t.type == "inline":
-            parts.append("".join(c.content for c in (t.children or []) if c.content))
+            text = "".join(
+                " " if c.type in ("softbreak", "hardbreak") else c.content
+                for c in (t.children or [])
+            )
+            parts.append(text)
         elif t.type in ("fence", "code_block"):
             parts.append(t.content)
-    return " ".join(p.strip() for p in parts if p.strip())
+    return " ".join(" ".join(p.split()) for p in parts if p.strip())
 
 
 _BLOCK_OPEN = {
@@ -249,7 +257,7 @@ def render_review_pdf(
         page_count = len(doc)
     finally:
         doc.close()
-    del body_pages
+    first_body = 2 if legend else 1
     return ReviewRender(
         pdf=pdf,
         blocks=blocks,
@@ -262,6 +270,9 @@ def render_review_pdf(
             "text_x0": content.x0,
             "text_x1": content.x1,
             "legend_pages": 1 if legend else 0,
+            "body_pages": [first_body, first_body + body_pages - 1],
+            "body_top": MARGIN_TOP - 6,
+            "body_bottom": PAGE_H - MARGIN_BOTTOM + 6,
         },
     )
 
@@ -359,14 +370,20 @@ def _prepend_legend(doc, note_margin: float) -> None:
 
 
 def assign_words_to_blocks(
-    blocks: Sequence[dict], page: int, words: Sequence[Tuple[float, float, float, float]]
+    blocks: Sequence[dict],
+    page: int,
+    words: Sequence[Tuple[float, float, float, float]],
+    body_pages: Optional[Sequence[int]] = None,
 ) -> List[Optional[str]]:
     """Map word rects on ``page`` to block ids using block start positions.
 
     A word belongs to the last block starting at or before it in reading order
     (page, then y). This stays correct when a block breaks across pages, which
-    PyMuPDF's element positions do not report.
+    PyMuPDF's element positions do not report. Pages outside ``body_pages``
+    (legend, responses) belong to no block.
     """
+    if body_pages and not body_pages[0] <= page <= body_pages[1]:
+        return [None] * len(words)
     starts = sorted(
         ((b["page"], b["y"], b["id"]) for b in blocks if b.get("page")), key=lambda s: s[:2]
     )

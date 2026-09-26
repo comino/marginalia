@@ -7,7 +7,9 @@ Tool modules call these through the module (``cloud.client()``), never via
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
+import threading
 from typing import Optional, Sequence, Tuple
 
 from mcp.types import ImageContent, TextContent
@@ -18,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 # A document counts as "done" once it sits in a folder with one of these names.
 DONE_FOLDER_NAMES = {"reviewed", "done", "erledigt", "answered", "beantwortet"}
+
+# MuPDF is not thread-safe; every workflow render/analysis runs under this lock.
+MUPDF_LOCK = threading.Lock()
 
 
 def client():
@@ -40,25 +45,67 @@ def refresh(c) -> None:
         logger.debug("Could not invalidate client cache: %s", exc)
 
 
+def is_trashed(item, by_id: dict) -> bool:
+    """True if the item or any ancestor sits in the tablet's trash."""
+    seen = set()
+    while item is not None and item.ID not in seen:
+        seen.add(item.ID)
+        parent = getattr(item, "Parent", "") or ""
+        if parent == "trash" or getattr(item, "deleted", False):
+            return True
+        item = by_id.get(parent)
+    return False
+
+
 def find_by_id(c, doc_id: str):
-    return next((d for d in c.get_meta_items() if d.ID == doc_id), None)
+    """The live (not trashed) document with this id, or None."""
+    items = c.get_meta_items()
+    by_id = get_items_by_id(items)
+    doc = by_id.get(doc_id)
+    return None if doc is None or is_trashed(doc, by_id) else doc
 
 
 def ensure_folder(c, path: str) -> str:
-    """Resolve ``/A/B`` to a folder id, creating missing levels."""
-    from remarkable_mcp.write_tools import _resolve_parent_id
-
+    """Resolve ``/A/B`` to a folder id, creating missing levels (trash ignored)."""
     parent_id = ""
-    walked = ""
     for part in [p for p in path.strip("/").split("/") if p]:
-        walked += "/" + part
-        collection = c.get_meta_items()
-        found = _resolve_parent_id(walked, get_items_by_id(collection), collection)
+        items = c.get_meta_items()
+        by_id = get_items_by_id(items)
+        found = next(
+            (
+                i.ID
+                for i in items
+                if i.is_folder
+                and (getattr(i, "Parent", "") or "") == parent_id
+                and i.VissibleName.lower() == part.lower()
+                and not is_trashed(i, by_id)
+            ),
+            None,
+        )
         if found is None:
             found = c.create_folder(part, parent_id).id
             refresh(c)
         parent_id = found
     return parent_id
+
+
+def ink_token(doc) -> Optional[str]:
+    """Fingerprint of a document's stroke files, from metadata alone.
+
+    Changes when pen strokes change, but not when the tablet merely updates
+    metadata (last opened page, zoom). Falls back to the document hash for
+    transports without per-file hashes.
+    """
+    files = getattr(doc, "files", None) or []
+    rm = sorted(
+        (f.get("id", ""), f.get("hash", "")) for f in files if str(f.get("id", "")).endswith(".rm")
+    )
+    if files:
+        h = hashlib.sha1()
+        for fid, fhash in rm:
+            h.update(f"{fid}:{fhash};".encode())
+        return h.hexdigest()[:16]
+    return getattr(doc, "hash", None)
 
 
 def upload_pdf(pdf: bytes, name: str, folder: str, orientation: str = "portrait"):
@@ -82,22 +129,25 @@ def download_zip(c, doc) -> bytes:
     return data
 
 
-def doc_status(doc, baseline_hash: Optional[str], by_id: dict) -> Tuple[str, Optional[str]]:
+def doc_status(doc, baseline: Optional[str], by_id: dict) -> Tuple[str, Optional[str]]:
     """(status, location) of a tracked document.
 
-    status: "missing" | "done" (moved to a done folder) | "annotated" (changed
-    since ``baseline_hash``) | "waiting".
+    ``baseline`` is the ink token recorded when the document was sent or last
+    read. status is one of:
+    - "missing":   deleted or in the trash
+    - "done":      moved to a done folder with ink not read yet
+    - "collected": in a done folder and already read
+    - "annotated": ink changed since the baseline
+    - "waiting":   no new ink
     """
-    if doc is None:
+    if doc is None or is_trashed(doc, by_id):
         return "missing", None
     path = get_item_path(doc, by_id)
+    changed = ink_token(doc) != baseline
     parent = by_id.get(getattr(doc, "Parent", "") or "")
     if parent is not None and parent.VissibleName.strip().lower() in DONE_FOLDER_NAMES:
-        return "done", path
-    current = getattr(doc, "hash", None)
-    if current and baseline_hash and current != baseline_hash:
-        return "annotated", path
-    return "waiting", path
+        return ("done" if changed else "collected"), path
+    return ("annotated" if changed else "waiting"), path
 
 
 def with_images(payload: str, images: Sequence[tuple]) -> list:

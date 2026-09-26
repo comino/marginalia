@@ -10,6 +10,8 @@ Writes are atomic (temp file + rename) so a crash never leaves half a record.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -17,7 +19,7 @@ import tempfile
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 
 def state_root() -> Path:
@@ -66,6 +68,33 @@ class Store:
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise
+
+    @contextlib.contextmanager
+    def locked(self):
+        """Exclusive lock over this store (across threads and processes)."""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        with open(self.dir / ".lock", "w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+    def update(
+        self, key: str, change: Callable[[Optional[Dict[str, Any]]], Optional[Dict[str, Any]]]
+    ) -> Optional[Dict[str, Any]]:
+        """Read-modify-write under the store lock; ``change`` gets the fresh record.
+
+        Use this instead of get()+put() whenever time passes between reading and
+        writing (downloads, transcription), so concurrent calls don't drop each
+        other's changes. Returning None from ``change`` leaves the record as is.
+        """
+        with self.locked():
+            current = self.get(key)
+            updated = change(current)
+            if updated is not None:
+                self.put(key, updated)
+            return updated if updated is not None else current
 
     def all(self) -> Iterator[Dict[str, Any]]:
         if not self.dir.exists():

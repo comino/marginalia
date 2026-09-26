@@ -392,7 +392,7 @@ class TestMarks:
         w = _page_w(rendered.pdf)
         strokes = {pno: [(_strike(rects), FINELINER, w)]}
         [first] = _analyse(rendered, strokes)
-        [again] = _analyse(rendered, strokes, seen={first.mark.id})
+        [again] = _analyse(rendered, strokes, seen=set(first.mark.seen_keys))
         assert first.new and not again.new
         assert first.mark.id == again.mark.id
 
@@ -619,8 +619,15 @@ def test_review_done_folder_status(cloud, tmp_path):
     review_folder = next(d for d in cloud.docs.values() if d.is_folder)
     done = cloud.create_folder("Reviewed", review_folder.id)
     doc.parent = doc.Parent = done.id
+    # Moved without new ink: nothing to collect.
+    listed = _json_of(asyncio.run(tools.remarkable_review_list()))
+    assert listed["reviews"][0]["status"] == "collected"
+    cloud.annotate(doc.id, {0: [(_hline(60, 200, 100), FINELINER, 446.0)]})
     listed = _json_of(asyncio.run(tools.remarkable_review_list()))
     assert listed["reviews"][0]["status"] == "done"
+    asyncio.run(tools.remarkable_review_collect(listed["reviews"][0]["review"]))
+    listed = _json_of(asyncio.run(tools.remarkable_review_list()))
+    assert listed["reviews"][0]["status"] == "collected"
 
 
 def test_annotations_tool_on_any_document(cloud, monkeypatch):
@@ -640,3 +647,124 @@ def test_annotations_tool_on_any_document(cloud, monkeypatch):
     assert got["pages_with_ink"] == [pno + 1]
     [mark] = got["marks"]
     assert mark["kind"] == "strikethrough" and mark["target"] == "permission to fetch data"
+
+
+# --------------------------------------------------------------------------- regressions
+
+
+def _doc_zip_v2(pdf_bytes, ink_by_page, extra_first_page=False):
+    """formatVersion 2 (cPages) zip, optionally with a user-inserted blank first page."""
+    doc_id = str(uuid.uuid4())
+    page_count = len(pymupdf.open(stream=pdf_bytes, filetype="pdf"))
+    entries = [{"id": str(uuid.uuid4()), "redir": {"value": i}} for i in range(page_count)]
+    if extra_first_page:
+        entries.insert(0, {"id": str(uuid.uuid4())})
+    content = {"fileType": "pdf", "formatVersion": 2, "cPages": {"pages": entries}}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"{doc_id}.content", json.dumps(content))
+        zf.writestr(f"{doc_id}.pdf", pdf_bytes)
+        for pdf_index, strokes in ink_by_page.items():
+            page_id = next(e["id"] for e in entries if e.get("redir", {}).get("value") == pdf_index)
+            zf.writestr(f"{doc_id}/{page_id}.rm", _rm_page(strokes))
+    return buf.getvalue()
+
+
+def test_note_added_after_collect_comes_back(rendered):
+    pno, rects = _phrase_rects(rendered.pdf, "permission to fetch data")
+    w = _page_w(rendered.pdf)
+    strike = [(_strike(rects), FINELINER, w)]
+    [first] = _analyse(rendered, {pno: strike})
+    seen = set(first.mark.seen_keys)
+    note = [(s, FINELINER, w) for s in _handwriting(rects[-1][2] + 30, rects[0][1] - 2, words=1)]
+    [later] = _analyse(rendered, {pno: strike + note}, seen=seen)
+    assert later.mark.id == first.mark.id  # same mark ...
+    assert later.mark.intent == "replace"  # ... now with a replacement note
+    assert later.new  # and therefore delivered again
+
+
+def test_inserted_tablet_page_keeps_mark_ids(rendered):
+    pno, rects = _phrase_rects(rendered.pdf, "permission to fetch data")
+    ink_pages = {pno: [(_strike(rects), FINELINER, _page_w(rendered.pdf))]}
+    plain = load_document_ink_from_zip(_doc_zip_v2(rendered.pdf, ink_pages))
+    shifted = load_document_ink_from_zip(
+        _doc_zip_v2(rendered.pdf, ink_pages, extra_first_page=True)
+    )
+    [a] = collect_requests(plain, rendered.manifest_blocks(), DRAFT)
+    [b] = collect_requests(shifted, rendered.manifest_blocks(), DRAFT)
+    assert a.page + 1 == b.page
+    assert a.mark.id == b.mark.id and a.mark.seen_keys == b.mark.seen_keys
+    assert b.to_dict(None, "none")["paragraph"] == 1
+
+
+def test_rotated_pdf_page_words_align_with_ink():
+    doc = pymupdf.open()
+    page = doc.new_page(width=300, height=500)
+    page.insert_text((40, 60), "rotate me please", fontsize=14)
+    page.set_rotation(90)
+    pdf = doc.tobytes()
+    shown = page.rect  # displayed size: 500 x 300
+    with pymupdf.open(stream=pdf, filetype="pdf") as d:
+        raw = [w for w in d[0].get_text("words") if w[4] == "me"][0]
+        box = (pymupdf.Rect(raw[:4]) * d[0].rotation_matrix).normalize()
+    w = shown.width
+    # A strike through "me" in displayed coordinates.
+    strike = [(box.x0 + (box.x1 - box.x0) * t / 20, (box.y0 + box.y1) / 2) for t in range(21)]
+    if box.width < box.height:  # vertical text after rotation: strike vertically
+        strike = [((box.x0 + box.x1) / 2, box.y0 + (box.y1 - box.y0) * t / 20) for t in range(21)]
+    ink = load_document_ink_from_zip(_doc_zip(pdf, {0: [(strike, FINELINER, w)]}))
+    pg = ink.pages[0]
+    assert (pg.width, pg.height) == (shown.width, shown.height)
+    me = next(x for x in pg.words if x.text == "me")
+    assert me.rect == pytest.approx(tuple(box), abs=0.5)
+
+
+def test_ink_on_responses_page_is_not_a_paragraph_request():
+    r = render_review_pdf(
+        DRAFT, version=2, responses=[{"id": "x", "status": "done", "reply": "ok"}]
+    )
+    last = r.page_count - 1
+    ink = load_document_ink_from_zip(
+        _doc_zip(r.pdf, {last: [(s, FINELINER, 446.0) for s in _handwriting(80, 200)]})
+    )
+    [req] = collect_requests(ink, r.manifest_blocks(), DRAFT, layout=r.layout)
+    assert req.block is None
+    assert "paragraph" not in req.to_dict(None, "none")
+
+
+def test_bar_beside_paragraph_numbers_targets_text_not_numbers(rendered):
+    pno, first = _phrase_rects(rendered.pdf, "Ending the session")
+    bar = _vbar(26, first[0][1], first[0][3] + 12)  # where change bars live
+    zip_bytes = _doc_zip(rendered.pdf, {pno: [(bar, FINELINER, _page_w(rendered.pdf))]})
+    ink = load_document_ink_from_zip(zip_bytes)
+    [req] = collect_requests(ink, rendered.manifest_blocks(), DRAFT, layout=rendered.layout)
+    assert req.mark.kind == "margin_bar"
+    assert req.mark.target_text.startswith("Ending the session")
+
+
+def test_nested_list_items_have_own_text():
+    r = render_review_pdf("- parent item\n  continued\n  - child item\n")
+    texts = [b.text for b in r.blocks]
+    assert texts == ["parent item continued", "child item"]
+
+
+def test_trashed_review_folder_is_not_reused(cloud):
+    from remarkable_mcp.workflows import tools
+
+    trashed = cloud.create_folder("Review", "trash")
+    asyncio.run(tools.remarkable_review_send(markdown="# T\n\nBody.\n"))
+    doc = next(d for d in cloud.docs.values() if not d.is_folder)
+    assert doc.Parent != trashed.id
+    doc.parent = doc.Parent = "trash"
+    listed = _json_of(asyncio.run(tools.remarkable_review_list()))
+    assert listed["reviews"][0]["status"] == "missing"
+
+
+def test_review_ids_never_collide(cloud):
+    from remarkable_mcp.workflows import tools
+
+    ids = {
+        _json_of(asyncio.run(tools.remarkable_review_send(markdown="# Same\n\nText.\n")))["review"]
+        for _ in range(3)
+    }
+    assert len(ids) == 3

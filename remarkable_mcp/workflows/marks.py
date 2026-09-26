@@ -58,6 +58,7 @@ class Mark:
     block_ids: List[str] = field(default_factory=list)
     note: Optional["Mark"] = None  # handwriting attached to this mark
     confidence: float = 0.9
+    page_key: str = ""  # PageInk.key: stable across tablet page insertions
 
     @property
     def target_text(self) -> str:
@@ -74,7 +75,8 @@ class Mark:
 
     @property
     def id(self) -> str:
-        h = hashlib.sha1(f"{self.page}:{self.kind}".encode())
+        """Stable id of the mark itself (its note may grow; see seen_keys)."""
+        h = hashlib.sha1(f"{self.page_key or self.page}:{self.kind}".encode())
         for s in self.strokes:
             h.update(s.fingerprint().encode())
         return "m" + h.hexdigest()[:8]
@@ -85,6 +87,13 @@ class Mark:
         if self.note is not None:
             prints += self.note.stroke_fingerprints
         return prints
+
+    @property
+    def seen_keys(self) -> List[str]:
+        """One key per stroke (mark + note). A mark is new while any key is unseen,
+        so a note written next to an already-collected mark comes back."""
+        prefix = self.page_key or f"page{self.page}"
+        return [f"{prefix}:{fp}" for fp in self.stroke_fingerprints]
 
 
 # --------------------------------------------------------------------------- geometry
@@ -560,6 +569,10 @@ def analyze_page(page: PageInk, blocks: Optional[Sequence[TextBlock]] = None) ->
         standalone.append(note)
 
     result = marks + standalone
+    for m in result:
+        m.page_key = page.key
+        if m.note is not None:
+            m.note.page_key = page.key
     result.sort(key=lambda m: (m.rect[1], m.rect[0]))
     return result
 

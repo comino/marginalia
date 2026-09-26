@@ -27,7 +27,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from remarkable_mcp.workflows.ink import Rect, Stroke
 from remarkable_mcp.workflows.state import Store
@@ -117,7 +117,11 @@ def render_page_region_png(
 
 
 def _cache_key(png: bytes, engine: str) -> str:
-    return engine.replace("/", "_") + "-" + hashlib.sha1(png).hexdigest()[:20]
+    variant = engine
+    if engine == "claude":
+        variant += ":" + os.environ.get("REMARKABLE_HANDWRITING_MODEL", _DEFAULT_CLAUDE_MODEL)
+    digest = hashlib.sha1(variant.encode() + b"\0" + png).hexdigest()[:24]
+    return f"{engine}-{digest}"
 
 
 def transcribe(png: bytes, engine: Optional[str] = None) -> Tuple[Optional[str], str]:
@@ -152,6 +156,33 @@ def transcribe(png: bytes, engine: Optional[str] = None) -> Tuple[Optional[str],
         except OSError:
             pass
     return text, engine
+
+
+def transcribe_many(
+    pngs: Sequence[bytes], engine: Optional[str] = None, deadline: float = 50.0
+) -> List[Tuple[Optional[str], str]]:
+    """Transcribe crops in parallel; crops not done by ``deadline`` seconds get None.
+
+    Keeps one collect call well inside typical MCP client timeouts even with
+    many notes; unfinished crops are simply returned untranscribed (and will be
+    cached for the next call once they complete).
+    """
+    import concurrent.futures as cf
+
+    engine = engine or backend()
+    if engine == "none" or not pngs:
+        return [(None, engine) for _ in pngs]
+    results: List[Tuple[Optional[str], str]] = [(None, engine) for _ in pngs]
+    pool = cf.ThreadPoolExecutor(max_workers=4)
+    futures = {pool.submit(transcribe, png, engine): i for i, png in enumerate(pngs)}
+    try:
+        for fut in cf.as_completed(futures, timeout=deadline):
+            results[futures[fut]] = fut.result()
+    except cf.TimeoutError:
+        logger.warning("Handwriting transcription deadline hit; returning partial results")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return results
 
 
 def _google(png: bytes) -> Optional[str]:

@@ -21,7 +21,7 @@ from remarkable_mcp.server import mcp
 from remarkable_mcp.workflows import cloud, handwriting
 from remarkable_mcp.workflows.ink import load_document_ink_from_zip
 from remarkable_mcp.workflows.review import collect_requests, source_digest
-from remarkable_mcp.workflows.review_pdf import render_review_pdf
+from remarkable_mcp.workflows.review_pdf import render_review_pdf, split_front_matter
 from remarkable_mcp.workflows.state import Store, now_iso, slugify
 
 logger = logging.getLogger(__name__)
@@ -68,26 +68,40 @@ def _note_payloads(requests, ink, include_images: bool):
     notes = {}
     images: List[tuple] = []
     pages = {p.page: p for p in ink.pages}
+    crops = []  # (mark id, png) for notes, transcribed together below
     for req in requests:
         mark = req.mark
         note = mark if mark.kind == "note" else mark.note
         if note is None:
             if include_images:
                 pg = pages[req.page]
-                png = handwriting.render_page_region_png(
-                    ink.pdf_bytes, pg.pdf_page, mark.strokes, mark.rect
-                )
+                with cloud.MUPDF_LOCK:
+                    png = handwriting.render_page_region_png(
+                        ink.pdf_bytes, pg.pdf_page, mark.strokes, mark.rect
+                    )
                 images.append((mark.id, "mark in context", png))
             continue
         png = handwriting.render_strokes_png(note.strokes, note.rect)
-        text, used = handwriting.transcribe(png, engine)
-        if text is not None:
-            notes[mark.id] = (text, f"transcribed:{used}")
-        else:
-            notes[mark.id] = (None, "image" if include_images else "not_transcribed")
+        crops.append((mark.id, png))
         if include_images:
             images.append((mark.id, "handwritten note", png))
+    results = handwriting.transcribe_many([png for _, png in crops], engine)
+    for (mark_id, _), (text, used) in zip(crops, results):
+        if text is not None:
+            notes[mark_id] = (text, f"transcribed:{used}")
+        else:
+            notes[mark_id] = (None, "image" if include_images else "not_transcribed")
     return notes, images
+
+
+def _requests_by_id(record: Optional[dict]) -> dict:
+    """Every request ever collected for a review, by id (legacy list included)."""
+    if not record:
+        return {}
+    known = dict(record.get("requests", {}))
+    for r in record.get("last_requests", []):
+        known.setdefault(r["id"], r)
+    return known
 
 
 def _shape(requests, notes) -> List[dict]:
@@ -181,12 +195,20 @@ async def remarkable_review_send(
     version = (record["versions"][-1]["version"] + 1) if record else 1
     previous = record["versions"][-1] if record else None
     legend = (version == 1) if legend is None else legend
+    fm, _, _ = split_front_matter(text)
+    effective_title = (
+        title
+        or (record or {}).get("title")
+        or fm.get("title")
+        or (Path(source_path).stem.replace("-", " ").strip() if source_path else None)
+        or "Draft"
+    )
 
     quoted = []
     if responses:
-        last = {r["id"]: r for r in (record or {}).get("last_requests", [])}
+        known = _requests_by_id(record)
         for r in responses:
-            req = last.get(r.get("id"), {})
+            req = known.get(r.get("id"), {})
             quote = req.get("note") or req.get("target") or ""
             label = r.get("id", "")
             if req.get("paragraph"):
@@ -199,35 +221,31 @@ async def remarkable_review_send(
                 }
             )
 
+    def render():
+        with cloud.MUPDF_LOCK:
+            return render_review_pdf(
+                text,
+                title=effective_title,
+                version=version,
+                legend=legend,
+                previous_digests=[b["digest"] for b in previous["blocks"]] if previous else None,
+                responses=quoted or None,
+            )
+
     try:
-        rendered = await asyncio.to_thread(
-            render_review_pdf,
-            text,
-            title=title or (record or {}).get("title"),
-            version=version,
-            legend=legend,
-            previous_digests=[b["digest"] for b in previous["blocks"]] if previous else None,
-            responses=quoted or None,
-        )
+        rendered = await asyncio.to_thread(render)
     except Exception as exc:
         return make_error(
             "render_failed", f"Could not render the draft: {exc}", "Check the Markdown."
         )
 
-    if (
-        not title
-        and not (record or {}).get("title")
-        and source_path
-        and not rendered.front_matter.get("title")
-    ):
-        rendered.title = Path(source_path).stem.replace("-", " ").strip() or rendered.title
-    slug = (
-        record["slug"]
-        if record
-        else slugify(review or rendered.front_matter.get("slug") or rendered.title)
-    )
-    if record is None and store.get(slug) is not None:
-        slug = f"{slug}-{source_digest(text)[:4]}"
+    if record is not None:
+        slug = record["slug"]
+    else:
+        base = slugify(review or fm.get("slug") or rendered.title)
+        slug, n = base, 2
+        while store.get(slug) is not None:
+            slug, n = f"{base}-{n}", n + 1
 
     if not cloud.is_cloud():
         return make_error(
@@ -257,18 +275,22 @@ async def remarkable_review_send(
         "blocks": rendered.manifest_blocks(),
         "source_text": text,
         "source_sha": source_digest(text),
-        "doc_hash_at_send": getattr(doc, "hash", None),
+        "ink_at_send": cloud.ink_token(doc),
     }
-    record = record or {
-        "slug": slug,
-        "title": rendered.title,
-        "source_path": source_path,
-        "created_at": now_iso(),
-        "versions": [],
-        "seen": [],
-    }
-    record["versions"].append(entry)
-    store.put(record["slug"], record)
+
+    def append(current):
+        current = current or {
+            "slug": slug,
+            "title": rendered.title,
+            "source_path": source_path,
+            "created_at": now_iso(),
+            "versions": [],
+            "seen_strokes": [],
+        }
+        current["versions"].append(entry)
+        return current
+
+    record = store.update(slug, append)
 
     changed = [b.number for b in rendered.blocks if b.changed]
     return make_response(
@@ -346,9 +368,12 @@ async def remarkable_review_collect(
         if doc is None:
             raise LookupError(entry["doc_name"])
         zip_bytes = cloud.download_zip(client, doc)
-        ink = load_document_ink_from_zip(zip_bytes)
-        seen = set(record.get("seen", []))
-        reqs = collect_requests(ink, entry["blocks"], entry.get("source_text"), seen)
+        seen = set(record.get("seen_strokes", []))
+        with cloud.MUPDF_LOCK:
+            ink = load_document_ink_from_zip(zip_bytes)
+            reqs = collect_requests(
+                ink, entry["blocks"], entry.get("source_text"), seen, entry.get("layout")
+            )
         if only_new:
             reqs = [r for r in reqs if r.new]
         notes, images = _note_payloads(reqs, ink, include_images)
@@ -366,18 +391,27 @@ async def remarkable_review_collect(
         return make_error("collect_failed", str(exc), "Check remarkable_status().")
 
     shaped = _shape(reqs, notes)
-    if mark_seen and reqs:
-        seen = set(record.get("seen", []))
-        seen.update(r.mark.id for r in reqs)
-        record["seen"] = sorted(seen)
-    if shaped:
-        record["last_requests"] = shaped
-    record["last_collect"] = {
-        "version": entry["version"],
-        "at": now_iso(),
-        "doc_hash": doc.hash if hasattr(doc, "hash") else None,
-    }
-    store.put(record["slug"], record)
+
+    def merge(current):
+        if current is None:
+            return None
+        if mark_seen and reqs:
+            seen = set(current.get("seen_strokes", []))
+            for r in reqs:
+                seen.update(r.mark.seen_keys)
+            current["seen_strokes"] = sorted(seen)
+        known = current.setdefault("requests", {})
+        for item in shaped:
+            known[item["id"]] = {**item, "version": entry["version"]}
+        current.pop("last_requests", None)
+        current["last_collect"] = {
+            "version": entry["version"],
+            "at": now_iso(),
+            "ink": cloud.ink_token(doc),
+        }
+        return current
+
+    record = store.update(record["slug"], merge) or record
 
     untranscribed = sum(1 for r in shaped if r.get("note_status") == "not_transcribed")
     hint = (
@@ -443,9 +477,7 @@ async def remarkable_review_list() -> str:
                 "source_path": r.get("source_path"),
                 "last_collect": (r.get("last_collect") or {}).get("at"),
             }
-            baseline = (r.get("last_collect") or {}).get("doc_hash") or latest.get(
-                "doc_hash_at_send"
-            )
+            baseline = (r.get("last_collect") or {}).get("ink") or latest.get("ink_at_send")
             row["status"], row["location"] = cloud.doc_status(doc, baseline, by_id)
             rows.append(row)
         return rows
@@ -496,8 +528,10 @@ async def remarkable_annotations(
         doc = _find_target_document(collection, get_items_by_id(collection), document)
         if doc is None:
             raise LookupError(document)
-        ink = load_document_ink_from_zip(cloud.download_zip(client, doc), pages)
-        reqs = collect_requests(ink)
+        zip_bytes = cloud.download_zip(client, doc)
+        with cloud.MUPDF_LOCK:
+            ink = load_document_ink_from_zip(zip_bytes, pages)
+            reqs = collect_requests(ink)
         notes, images = _note_payloads(reqs, ink, include_images)
         return doc, ink, reqs, notes, images
 

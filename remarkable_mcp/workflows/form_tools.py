@@ -52,7 +52,8 @@ def _forms() -> Store:
 
 def _send(title: str, fields: list, intro: str, folder: str, kind: str) -> str:
     try:
-        rendered = render_form(title, fields, intro=intro)
+        with cloud.MUPDF_LOCK:
+            rendered = render_form(title, fields, intro=intro)
     except FormSpecError as exc:
         return make_error("invalid_form", str(exc), "Fix the field list and try again.")
     if not cloud.is_cloud():
@@ -70,7 +71,7 @@ def _send(title: str, fields: list, intro: str, folder: str, kind: str) -> str:
         "doc_id": doc.id,
         "folder": folder,
         "sent_at": now_iso(),
-        "doc_hash_at_send": getattr(doc, "hash", None),
+        "ink_at_send": cloud.ink_token(doc),
         "manifest": rendered.manifest(),
     }
     _forms().put(form_id, record)
@@ -185,46 +186,52 @@ def _read(record: dict, include_images: bool):
     doc = cloud.find_by_id(c, record["doc_id"])
     if doc is None:
         raise LookupError(record["title"])
-    ink = load_document_ink_from_zip(cloud.download_zip(c, doc))
-    pages = {p.pdf_page + 1: p for p in ink.pages if p.pdf_page is not None}
+    zip_bytes = cloud.download_zip(c, doc)
     manifest = record["manifest"]
+    with cloud.MUPDF_LOCK:
+        ink = load_document_ink_from_zip(zip_bytes)
+    pages = {p.pdf_page + 1: p for p in ink.pages if p.pdf_page is not None}
     answers = read_answers(manifest, pages)
     engine = handwriting.backend()
     images = []
     out_fields = []
     values = {}
+    crops = {}  # field id / remark id -> png
+    for ans in answers:
+        if ans.field["type"] == "text" and ans.strokes:
+            crops[ans.field["id"]] = handwriting.render_strokes_png(ans.strokes, ans.rect)
+    remarks = []
+    for pno, strokes in stray_strokes(manifest, pages).items():
+        for g in _cluster([s.bbox for s in strokes], 12, 8):
+            group = [strokes[i] for i in g]
+            label = f"remark-p{pno}-{len(remarks) + 1}"
+            crops[label] = handwriting.render_strokes_png(group, _union([s.bbox for s in group]))
+            remarks.append({"id": label, "page": pno, "text": None})
+    labels = list(crops)
+    texts = dict(zip(labels, handwriting.transcribe_many([crops[k] for k in labels], engine)))
+
     for ans in answers:
         f = ans.field
         item = {"id": f["id"], "type": f["type"], "label": f["label"], "status": ans.status}
         if f["type"] == "text":
             value = None
-            if ans.strokes:
-                png = handwriting.render_strokes_png(ans.strokes, ans.rect)
-                value, used = handwriting.transcribe(png, engine)
+            if f["id"] in crops:
+                value, used = texts[f["id"]]
                 item["status"] = "answered" if value else "needs_transcription"
                 if value:
                     item["engine"] = used
                 if include_images:
-                    images.append((f["id"], "handwritten answer", png))
+                    images.append((f["id"], "handwritten answer", crops[f["id"]]))
             item["value"] = value
         else:
             item["value"] = ans.value
         item.update(ans.detail)
         values[f["id"]] = item["value"]
         out_fields.append(item)
-
-    remarks = []
-    for pno, strokes in stray_strokes(manifest, pages).items():
-        groups = _cluster([s.bbox for s in strokes], 12, 8)
-        for g in groups:
-            group = [strokes[i] for i in g]
-            rect = _union([s.bbox for s in group])
-            png = handwriting.render_strokes_png(group, rect)
-            text, _ = handwriting.transcribe(png, engine)
-            label = f"remark-p{pno}-{len(remarks) + 1}"
-            remarks.append({"id": label, "page": pno, "text": text})
-            if include_images:
-                images.append((label, "margin remark", png))
+    for remark in remarks:
+        remark["text"] = texts[remark["id"]][0]
+        if include_images:
+            images.append((remark["id"], "margin remark", crops[remark["id"]]))
     return doc, out_fields, values, remarks, images
 
 
@@ -269,9 +276,15 @@ async def remarkable_form_read(form: str, include_images: bool = False):
     answered = bool(choices) and all(f["status"] in ("answered", "ambiguous") for f in choices)
     if record.get("kind") == "ask":
         answered = next((f["status"] != "empty" for f in fields if f["id"] == "answer"), False)
-    record["last_read"] = {"at": now_iso(), "doc_hash": getattr(doc, "hash", None)}
-    record["answers"] = values
-    _forms().put(record["id"], record)
+
+    def merge(current):
+        if current is None:
+            return None
+        current["last_read"] = {"at": now_iso(), "ink": cloud.ink_token(doc)}
+        current["answers"] = values
+        return current
+
+    _forms().update(record["id"], merge)
 
     hint = (
         "All questions answered." if answered else "Not (fully) answered yet - check again later."
@@ -310,7 +323,7 @@ async def remarkable_form_list(include_done: bool = True) -> str:
         by_id = get_items_by_id(c.get_meta_items())
         rows = []
         for r in records:
-            baseline = (r.get("last_read") or {}).get("doc_hash") or r.get("doc_hash_at_send")
+            baseline = (r.get("last_read") or {}).get("ink") or r.get("ink_at_send")
             status, location = cloud.doc_status(by_id.get(r["doc_id"]), baseline, by_id)
             if status == "done" and not include_done:
                 continue

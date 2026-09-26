@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from remarkable_mcp.workflows.ink import DocumentInk, PageInk
@@ -61,7 +61,24 @@ def _excerpt(text: str, target: str, width: int = 160) -> str:
     return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
 
 
-def manifest_text_blocks(page: PageInk, manifest_blocks: Sequence[dict]) -> List[TextBlock]:
+def body_view(page: PageInk, layout: Optional[dict]) -> PageInk:
+    """The page with only body-text words (no margin numbers, header, footer).
+
+    Review PDFs print paragraph numbers in the left margin and a header/footer;
+    they are real text, and would otherwise become targets of margin bars.
+    """
+    if not layout or "text_x0" not in layout:
+        return page
+    x0 = layout["text_x0"] - 2
+    top = layout.get("body_top", 0.0)
+    bottom = layout.get("body_bottom", page.height)
+    words = [w for w in page.words if w.rect[0] >= x0 and w.rect[1] >= top and w.rect[3] <= bottom]
+    return replace(page, words=words)
+
+
+def manifest_text_blocks(
+    page: PageInk, manifest_blocks: Sequence[dict], layout: Optional[dict] = None
+) -> List[TextBlock]:
     """Text blocks for ``page`` built from the review manifest.
 
     Words are assigned to blocks by block start position; each block's rect on
@@ -72,7 +89,12 @@ def manifest_text_blocks(page: PageInk, manifest_blocks: Sequence[dict]) -> List
     if page.pdf_page is None:
         return []
     pdf_page = page.pdf_page + 1
-    owners = assign_words_to_blocks(manifest_blocks, pdf_page, [w.rect for w in page.words])
+    owners = assign_words_to_blocks(
+        manifest_blocks,
+        pdf_page,
+        [w.rect for w in page.words],
+        (layout or {}).get("body_pages"),
+    )
     by_id: Dict[str, List[Tuple[float, float, float, float]]] = {}
     for word, owner in zip(page.words, owners):
         if owner:
@@ -120,15 +142,22 @@ def collect_requests(
     manifest_blocks: Optional[Sequence[dict]] = None,
     source_text: Optional[str] = None,
     seen: Optional[Set[str]] = None,
+    layout: Optional[dict] = None,
 ) -> List[ChangeRequest]:
-    """Analyse every annotated page into change requests, in reading order."""
+    """Analyse every annotated page into change requests, in reading order.
+
+    ``seen`` holds stroke keys (Mark.seen_keys) returned before; a request is
+    new while any of its strokes - including a note added later - is unseen.
+    """
     seen = seen or set()
     by_id = {b["id"]: b for b in (manifest_blocks or [])}
     out: List[ChangeRequest] = []
     for page in ink.annotated_pages():
-        blocks = (
-            manifest_text_blocks(page, manifest_blocks) if manifest_blocks else default_blocks(page)
-        )
+        if manifest_blocks:
+            page = body_view(page, layout)
+            blocks = manifest_text_blocks(page, manifest_blocks, layout)
+        else:
+            blocks = default_blocks(page)
         for mark in analyze_page(page, blocks):
             block = by_id.get(mark.block_ids[0]) if (mark.block_ids and by_id) else None
             src_line = None
@@ -140,7 +169,7 @@ def collect_requests(
                     page=page.page,
                     block=block,
                     src_line=src_line,
-                    new=mark.id not in seen,
+                    new=not set(mark.seen_keys) <= seen,
                 )
             )
     return out
