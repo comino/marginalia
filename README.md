@@ -433,6 +433,7 @@ Or copy the `SKILL.md` from this repository into your `~/.openclaw/skills/remark
 | `remarkable_review_list` | List review rounds and which have new marks waiting |
 | `remarkable_ask` / `remarkable_form_*` | Questions and forms answered with ticks on the tablet |
 | `remarkable_inbox*` | Handwritten requests in an "Agent Inbox" become agent tasks |
+| `remarkable_sketch` / `remarkable_regions` | Hand-drawn diagrams → graph + Mermaid; page ink → regions |
 
 The read/search/render tools are read-only. `remarkable_export` never changes the
 tablet, but it writes a bounded temporary file on the MCP server host and therefore

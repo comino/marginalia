@@ -18,6 +18,8 @@ happen in the server, so a small model can run the workflows with a few calls.
 | `remarkable_inbox_setup` | Create (or register) the Agent Inbox document |
 | `remarkable_inbox` | Get the handwritten requests from the inbox as tasks |
 | `remarkable_inbox_done` | Mark requests done and optionally reply with a PDF on the tablet |
+| `remarkable_sketch` | Hand-drawn boxes, circles, diamonds and arrows → graph + Mermaid + clean SVG |
+| `remarkable_regions` | Split a page's ink into writing and drawing regions with crops |
 
 ## Pen review round-trip
 
@@ -157,6 +159,41 @@ acknowledges requests and uploads one "Replies" PDF to `/Agent/Replies`, so
 the answers show up on the tablet. A request you add to after it was marked
 done comes back as pending. Requests are recognised by their stroke
 fingerprints, so extending one updates it rather than creating a new entry.
+
+## Sketch → diagram
+
+```python
+remarkable_regions("Architecture ideas", page=2)          # find the drawing on the page
+remarkable_sketch("Architecture ideas", page=2, region=[40, 300, 420, 560])
+```
+
+```json
+{"nodes": [{"id": "n1", "shape": "rect", "label": "API"},
+           {"id": "n2", "shape": "ellipse", "label": "DuckDB"},
+           {"id": "n3", "shape": "diamond", "label": "authorised?"}],
+ "edges": [{"from": "n1", "to": "n3", "directed": true, "label": null},
+           {"from": "n3", "to": "n2", "directed": true, "label": "yes"}],
+ "mermaid": "flowchart TD\n    n1[\"API\"]\n ..."}
+```
+
+Recognition is purely geometric:
+
+- **Nodes.** Each outline is simplified with Ramer–Douglas–Peucker, and its
+  corners are counted: 4 corners make a rectangle, or a diamond when the
+  corners sit at the side midpoints; 3 make a triangle; a smooth closed curve
+  is an ellipse. A box drawn in several strokes is joined up by its endpoints.
+- **Edges.** Open strokes are lines. An arrowhead drawn in the same stroke, or
+  as a separate small V at one end, makes the line an arrow. Each end snaps to
+  the nearest shape boundary.
+- **Labels.** Handwriting inside a shape names it; handwriting next to a line
+  names the edge.
+- **Ignored.** Lines that touch no shape, and loops back onto their own shape,
+  are dropped; they are usually underlines or doubled outlines.
+
+`include_svg=true` returns a clean redraw, and `include_images=true` also
+attaches it as a PNG together with the label crops. `remarkable_regions` groups
+a page's ink into separate regions, labels each `writing` or `drawing`, and
+gives crops a small vision model can read one at a time.
 
 ## Annotations on any document
 
