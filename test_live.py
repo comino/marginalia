@@ -197,3 +197,19 @@ def test_live_watch_settle_is_bounded_by_timeout(monkeypatch):
     )
     assert out["status"] == "changed"
     assert _time.time() - t0 < 5 + 1.0 + 1.5
+
+
+def test_live_watch_cursor_from_before_a_restart(monkeypatch):
+    from remarkable_mcp.workflows import live_tools
+
+    w = FakeWatcher([live.Change("a", "Sketch", "/Sketch", "ink", ["p1"])])
+    w.seq = 1  # restarted server: seq starts again from 0 and is now at 1
+    _patch(monkeypatch, w)
+    out = json.loads(
+        asyncio.run(
+            live_tools.remarkable_live_watch(
+                "Sketch", timeout=5, settle=0.2, analyse="none", since=17
+            )
+        )
+    )
+    assert out["status"] == "changed" and out["gap"] is True

@@ -41,8 +41,6 @@ def synctex_inputs(sync: Path) -> List[str]:
                 path = line.split(":", 2)[-1].strip()
                 if path:
                     out.append(str(Path(path).resolve()))
-            elif line.startswith("Content:"):
-                break  # inputs are all declared in the preamble
     return out
 
 

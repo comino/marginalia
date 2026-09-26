@@ -117,6 +117,7 @@ class Autopilot:
         self.last_trmnl_push = float(saved.get("pushed_at", 0.0))
         self.last_trmnl_text: Optional[str] = saved.get("text")
         self.mirror_due: Optional[float] = None  # changed text waiting for the rate window
+        self.overview_failures = 0
 
     # ------------------------------------------------------------ checks
 
@@ -130,11 +131,15 @@ class Autopilot:
         try:
             ov = await self.overview()
         except Exception as exc:  # corrupt state, network ... the loop must survive
-            logger.warning("overview failed: %s", exc)
-            return {"_error": str(exc)}
+            ov = {"_error": str(exc)}
         if "_error" in ov:
+            self.overview_failures += 1
             logger.warning("overview failed: %s", ov["_error"])
+            if self.mirror_due is not None:
+                # Don't retry every second through an outage: back off.
+                self.mirror_due = time.time() + min(900.0, 60.0 * self.overview_failures)
             return ov
+        self.overview_failures = 0
         try:
             self.mirror(ov)
         except Exception as exc:
@@ -276,10 +281,13 @@ def _run_agent(argv: List[str], log, timeout: float) -> int:
             os.killpg(proc.pid, signal.SIGTERM)
             proc.wait(timeout=10)
         except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            pass
+        try:
+            # Grandchildren that ignore SIGTERM outlive the leader: always finish
+            # the whole group off.
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         return -1
 
 

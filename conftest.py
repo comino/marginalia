@@ -62,4 +62,8 @@ def isolate_workflow_state(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(base / "remarkable"))
     monkeypatch.setenv("TRMNL_STATE_DIR", str(base / "trmnl"))
     monkeypatch.setenv("REMARKABLE_AUTOPILOT_CONFIG", str(base / "autopilot.json"))
+    # No test may reach the real TRMNL display.
+    monkeypatch.setenv("TRMNL_CONFIG", str(base / "trmnl-config.json"))
+    monkeypatch.delenv("TRMNL_PLUGIN_UUID", raising=False)
+    monkeypatch.delenv("TRMNL_IMAGE_PLUGIN_UUID", raising=False)
     yield

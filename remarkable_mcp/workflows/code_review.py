@@ -69,8 +69,9 @@ def _unquote_git_path(path: str) -> str:
         ch = raw[i]
         if ch == "\\" and i + 1 < len(raw):
             nxt = raw[i + 1]
-            if nxt in "01234567" and i + 3 < len(raw) + 1:
-                out.append(int(raw[i + 1 : i + 4], 8))
+            octal = raw[i + 1 : i + 4]
+            if len(octal) == 3 and all(c in "01234567" for c in octal):
+                out.append(int(octal, 8) & 0xFF)
                 i += 4
                 continue
             out += simple.get(nxt, nxt.encode())
@@ -308,8 +309,6 @@ def collect_comments(
     row_index = {f"row{i}": r for i, r in enumerate(rows)}
     for pno, page in sorted(pages.items()):
         blocks = _row_blocks(rows, pno)
-        if not blocks:
-            continue
         keep_out = [
             (a["rect"][0] - 16, a["rect"][1] - 16, a["rect"][2] + 16, a["rect"][3] + 16)
             for a in exclude

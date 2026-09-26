@@ -131,6 +131,15 @@ async def remarkable_live_watch(
         return ch.kind in ("ink", "new") and _matches(ch, document)
 
     start_seq = watcher.seq if since is None else int(since)
+    gap = False
+    oldest = watcher.history[0][0] if getattr(watcher, "history", None) else None
+    if since is not None and (
+        start_seq > watcher.seq or (oldest is not None and start_seq < oldest - 1)
+    ):
+        # The cursor is from before a server restart, or older than the kept
+        # history: resume from what is available and say so.
+        gap = True
+        start_seq = (oldest - 1) if oldest is not None else watcher.seq
     deadline = time.time() + timeout
     batch: List[live.Change] = []
     cursor = start_seq
@@ -158,6 +167,8 @@ async def remarkable_live_watch(
         "syncs_seen": watcher.events_seen,
         "cursor": max(cursor, start_seq),
     }
+    if gap:
+        status["gap"] = True  # some changes before this point may have been missed
     if not batch:
         return make_response(
             {"status": "no_change", **status},

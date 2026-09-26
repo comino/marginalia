@@ -245,3 +245,29 @@ def test_diff_arguments_cannot_become_options(bad):
     }
     with pytest.raises(ValueError):
         _get_diff(args["pr"], args["repo"], args["repo_path"], args["base"], args["paths"])
+
+
+@pytest.mark.parametrize(
+    "ref", ["origin/feature-x", "HEAD~3", "v1.2.3", "HEAD^2", "main@{1}", "release+1"]
+)
+def test_valid_refs_are_accepted(ref, monkeypatch):
+    import subprocess
+
+    from remarkable_mcp.workflows import code_review_tools as t
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(t.subprocess, "run", fake_run)
+    t._get_diff(None, None, "/tmp", ref, None)
+    assert f"{ref}...HEAD" in seen["cmd"] and "--no-textconv" in seen["cmd"]
+
+
+def test_newline_in_ref_is_rejected():
+    from remarkable_mcp.workflows.code_review_tools import _get_diff
+
+    with pytest.raises(ValueError):
+        _get_diff(None, None, "/tmp", "main\n", None)

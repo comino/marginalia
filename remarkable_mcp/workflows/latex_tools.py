@@ -90,9 +90,11 @@ async def remarkable_latex_review_send(
     # Snapshot the .tex/.bib sources of this compilation too, so "line" and
     # "source" refer to the text that was actually printed, even after edits.
     sources = {}
-    for path in synctex_inputs(sync):
+    project = pdf.parent.resolve()
+    for path in dict.fromkeys(synctex_inputs(sync)):
         p = Path(path)
-        if p.suffix in (".tex", ".bib", ".sty", ".cls", ".bbl") and p.is_file():
+        inside = project == p or project in p.parents  # skip texmf classes/packages
+        if inside and p.suffix in (".tex", ".bib", ".sty", ".cls", ".bbl") and p.is_file():
             try:
                 if p.stat().st_size <= 2_000_000:
                     sources[path] = p.read_text(errors="replace")

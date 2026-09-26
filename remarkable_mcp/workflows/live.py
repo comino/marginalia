@@ -167,6 +167,7 @@ class Watcher:
         self.history: Deque[Tuple[int, Change]] = deque(maxlen=HISTORY)
         self.errors = 0  # consecutive failed metadata reads (drives backoff)
         self.errors_total = 0  # failed metadata reads since start
+        self.last_refresh_ok = True
         self.last_error: Optional[str] = None
 
     # ------------------------------------------------------------ consumers
@@ -210,6 +211,8 @@ class Watcher:
                 await asyncio.sleep(wait)
             self._dirty = False
             await self.safe_refresh()
+            if not self.last_refresh_ok:
+                self._dirty = True  # keep the pending change; safe_refresh backed off
 
     async def refresh(self) -> List[Change]:
         """Re-read metadata, publish and return what changed since the last look."""
@@ -253,9 +256,11 @@ class Watcher:
             self.last_error = f"{type(exc).__name__}: {exc}"
             wait = min(MAX_BACKOFF_SECONDS, 5.0 * 2 ** min(self.errors, 6))
             logger.warning("metadata refresh failed (%s); retrying in %.0fs", exc, wait)
+            self.last_refresh_ok = False
             await asyncio.sleep(wait)
             return []
         self.errors = 0
+        self.last_refresh_ok = True
         return changes
 
     @staticmethod

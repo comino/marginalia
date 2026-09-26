@@ -266,3 +266,20 @@ def test_changes_since_lets_consumers_resume():
     assert w.seq == 3
     assert [s for s, _ in w.changes_since(1)] == [2, 3]
     assert w.changes_since(3) == []
+
+
+def test_failed_refresh_keeps_the_change_pending():
+    """A 429 on the refresh that should publish a change must be retried."""
+    calls = {"n": 0}
+
+    def snap():
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("HTTP 429")
+        return _doc("new" if calls["n"] > 1 else "old")
+
+    async def connect():
+        return Socket([SYNC], then="idle")
+
+    w = live.Watcher(take_snapshot=snap, connect=connect)
+    run_until(w, lambda: w.seq >= 1)  # published after the retry, without another sync

@@ -319,9 +319,6 @@ async def remarkable_ink_digest(
         reported: dict = {}  # doc id -> {stroke file id: hash} actually reported
         skipped_docs = 0
         for it in recent:
-            if len(docs_out) >= max_documents:
-                skipped_docs += 1
-                continue
             pages_now = snap[it.ID].pages
             before = previous.get(it.ID, {})
             changed_ids = [
@@ -330,6 +327,9 @@ async def remarkable_ink_digest(
                 if before.get(fid) != h
             ]
             if not changed_ids:
+                continue
+            if len(docs_out) >= max_documents:
+                skipped_docs += 1  # has new ink, left for the next digest
                 continue
             zip_bytes = cloud.download_zip(c, it)
             with tempfile.TemporaryDirectory() as tmp:
@@ -340,7 +340,9 @@ async def remarkable_ink_digest(
                 order = _get_page_order(Path(tmp))
             all_numbers = sorted({order.index(p) + 1 for p in changed_ids if p in order})
             numbers = all_numbers[:MAX_DIGEST_PAGES]
-            done_ids = {order[n - 1] for n in numbers}
+            # Orphaned stroke files (not in the page order) are recorded too, or
+            # the document would be downloaded again on every digest.
+            done_ids = {order[n - 1] for n in numbers} | {p for p in changed_ids if p not in order}
             reported[it.ID] = {
                 fid: h
                 for fid, h in pages_now.items()
@@ -380,10 +382,10 @@ async def remarkable_ink_digest(
                 if len(all_numbers) > len(numbers):
                     entry["more_pages"] = len(all_numbers) - len(numbers)
                 docs_out.append(entry)
-        return reported, docs_out, images, skipped_docs
+        return reported, docs_out, images, skipped_docs, set(snap)
 
     try:
-        reported, docs_out, images, skipped_docs = await asyncio.to_thread(work)
+        reported, docs_out, images, skipped_docs, live_ids = await asyncio.to_thread(work)
     except Exception as exc:
         return make_error("digest_failed", str(exc), "Check remarkable_status().")
 
@@ -393,6 +395,8 @@ async def remarkable_ink_digest(
             cur = cur or {"pages": {}}
             for doc_id, pages in reported.items():
                 cur["pages"].setdefault(doc_id, {}).update(pages)
+            for doc_id in [d for d in cur["pages"] if d not in live_ids]:
+                del cur["pages"][doc_id]  # deleted documents
             cur["at"] = now_iso()
             return cur
 

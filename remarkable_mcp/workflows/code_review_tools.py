@@ -48,24 +48,24 @@ def _store() -> Store:
 
 _PR = re.compile(r"^(\d+|https://github\.com/[\w.-]+/[\w.-]+/pull/\d+)$")
 _REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
-_REF = re.compile(r"^[\w./@{}^~-]+$")
+_REF = re.compile(r"[\w./@{}^~+-]+")
 
 
 def _get_diff(pr, repo, repo_path, base, paths) -> str:
     """Fetch the diff. Every user-supplied value is validated so none can be
     read as an option by git/gh (e.g. base="--output=/some/file")."""
     if pr is not None:
-        if not _PR.match(str(pr)):
+        if not _PR.fullmatch(str(pr)):
             raise ValueError("pr must be a number or a GitHub pull request URL.")
         cmd = ["gh", "pr", "diff", str(pr)]
         if repo:
-            if not _REPO.match(repo):
+            if not _REPO.fullmatch(repo):
                 raise ValueError("repo must look like owner/name.")
             cmd += ["-R", repo]
     else:
         if not repo_path:
             raise ValueError("Pass pr= (GitHub) or repo_path= (local git diff).")
-        if not _REF.match(base) or base.startswith("-"):
+        if not _REF.fullmatch(base) or base.startswith("-"):
             raise ValueError(f"Not a valid git ref: {base!r}")
         cmd = [
             "git",
@@ -75,6 +75,7 @@ def _get_diff(pr, repo, repo_path, base, paths) -> str:
             "core.quotePath=false",
             "diff",
             "--no-color",
+            "--no-textconv",
             "--no-ext-diff",
             f"{base}...HEAD",
         ]

@@ -149,3 +149,17 @@ def test_table_with_rules_drawn_per_cell():
             )
     t = find_table(strokes)
     assert t is not None and t.shape == (3, 3)
+
+
+def test_digest_more_hint_only_when_ink_remains(cloud):  # noqa: F811
+    from remarkable_mcp.workflows import structure_tools as st
+
+    for name in ("A", "B"):
+        doc = pymupdf.open()
+        doc.new_page(width=446, height=595)
+        d = cloud.upload_document(doc.tobytes(), name, "pdf")
+        cloud.annotate(d.id, {0: [(p, FINELINER, 446.0) for p in _handwriting(40, 60, words=2)]})
+    first = _json_of(asyncio.run(st.remarkable_ink_digest(max_documents=1)))
+    assert "call again" in first["_hint"]
+    second = _json_of(asyncio.run(st.remarkable_ink_digest(max_documents=1)))
+    assert len(second["documents"]) == 1 and "call again" not in second["_hint"]

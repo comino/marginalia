@@ -162,3 +162,22 @@ def test_collect_uses_the_compiled_sources(tex, cloud):  # noqa: F811
         assert len(again["requests"]) == 1  # the peek did not consume it
     finally:
         (tex / "chapters" / "method.tex").write_text(original)
+
+
+def test_snapshot_includes_included_chapters(tmp_path):
+    from remarkable_mcp.workflows.latex_review import synctex_inputs
+
+    (tmp_path / "ch1.tex").write_text("Chapter one text.\n")
+    (tmp_path / "ch2.tex").write_text("Chapter two text.\n")
+    (tmp_path / "main.tex").write_text(
+        "\\documentclass{report}\n\\begin{document}\n\\include{ch1}\n\\include{ch2}\n\\end{document}\n"
+    )
+    subprocess.run(
+        ["pdflatex", "-synctex=1", "-interaction=nonstopmode", "main.tex"],
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=120,
+        check=True,
+    )
+    names = {Path(p).name for p in synctex_inputs(tmp_path / "main.synctex.gz")}
+    assert {"main.tex", "ch1.tex", "ch2.tex"} <= names

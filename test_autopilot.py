@@ -183,3 +183,18 @@ def test_unit_file_is_sane():
     assert "Environment=PATH=%h/.local/bin" in unit
     assert "StartLimitBurst" in unit and "Restart=on-failure" in unit
     assert "@main" not in unit  # pinned, not tracking a branch
+
+
+def test_outage_does_not_spin(monkeypatch):
+    import time as _t
+
+    pilot = autopilot.Autopilot(dict(autopilot.DEFAULTS))
+    pilot.mirror_due = _t.time() - 5  # a pending TRMNL update is overdue
+
+    async def down():
+        return {"_error": "network unreachable"}
+
+    monkeypatch.setattr(pilot, "overview", down)
+    asyncio.run(pilot.check())
+    asyncio.run(pilot.check())
+    assert pilot.mirror_due >= _t.time() + 100  # backs off instead of retrying every second
