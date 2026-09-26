@@ -581,6 +581,7 @@ def register_workflow_tools(write_enabled: bool) -> None:
         code_review_tools,
         form_tools,
         inbox_tools,
+        latex_tools,
         live_tools,
         overview_tools,
         prompts,
@@ -591,6 +592,7 @@ def register_workflow_tools(write_enabled: bool) -> None:
     overview_tools.register(mcp, write_enabled)
     live_tools.register(mcp, write_enabled)
     code_review_tools.register(mcp, write_enabled)
+    latex_tools.register(mcp, write_enabled)
     form_tools.register(mcp, write_enabled)
     inbox_tools.register(mcp, write_enabled)
     sketch_tools.register(mcp, write_enabled)
