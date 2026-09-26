@@ -257,6 +257,8 @@ def _classify_closed(points: Sequence[Point], rect: Rect, strokes: List[Stroke])
         if _angle(simple[i - 1], simple[i], simple[(i + 1) % len(simple)]) < 145
     ]
     rb = _robust_bbox(points)
+    if len(points) > 64:  # the fit needs the outline's course, not every sample
+        points = [points[i * len(points) // 64] for i in range(64)]
     x0, y0, x1, y1 = rb
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     scale = max(min(x1 - x0, y1 - y0), 1e-6)
@@ -267,8 +269,10 @@ def _classify_closed(points: Sequence[Point], rect: Rect, strokes: List[Stroke])
         "rect": _mean_distance(points, box) / scale,
         "diamond": _mean_distance(points, diamond) / scale,
     }
-    # Drawn a little askew: fit the outlines to the straightened ink as well.
-    for deg in (-10.0, -5.0, 5.0, 10.0):
+    # Drawn a little askew: fit the outlines to the straightened ink as well
+    # (unless one already fits cleanly).
+    clean = min(fits.values()) < 0.04
+    for deg in () if clean else (-10.0, -5.0, 5.0, 10.0):
         a = math.radians(deg)
         ca, sa = math.cos(a), math.sin(a)
         turned = [
@@ -531,7 +535,14 @@ def recognise(
         ends = [c.points[0], c.points[-1]]
         attached: List[Optional[str]] = []
         for p in ends:
-            best = min(nodes, key=lambda n: _node_boundary_distance(p, n.shape), default=None)
+            # A shape lies inside its box, so nodes whose box is far away can't attach.
+            near = [
+                n
+                for n in nodes
+                if n.shape.rect[0] - 14 <= p[0] <= n.shape.rect[2] + 14
+                and n.shape.rect[1] - 14 <= p[1] <= n.shape.rect[3] + 14
+            ]
+            best = min(near, key=lambda n: _node_boundary_distance(p, n.shape), default=None)
             if best is not None and _node_boundary_distance(p, best.shape) <= 14:
                 attached.append(best.id)
             else:

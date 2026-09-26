@@ -41,8 +41,20 @@ def _tool_names():
     return {t.name for t in asyncio.run(mcp.list_tools())}
 
 
+def _trmnl_tool_names():
+    """TRMNL tools, whether or not a display is configured where the tests run
+    (the server registers them at import time only when one is)."""
+    from mcp.server.mcpserver import MCPServer
+
+    from remarkable_mcp.trmnl import tools as trmnl_tools
+
+    scratch = MCPServer(name="trmnl-names")
+    trmnl_tools.register(scratch)
+    return {t.name for t in asyncio.run(scratch.list_tools())}
+
+
 def test_every_tool_named_in_docs_and_prompts_exists():
-    names = _tool_names()
+    names = _tool_names() | _trmnl_tool_names()
     sources = {
         "README.md": (ROOT / "README.md").read_text(),
         "docs/workflows.md": (ROOT / "docs" / "workflows.md").read_text(),
