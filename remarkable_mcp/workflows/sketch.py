@@ -80,14 +80,6 @@ def _bbox(points: Sequence[Point]) -> Rect:
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def _ellipse_error(points: Sequence[Point], rect: Rect) -> float:
-    """Mean relative deviation of points from the ellipse inscribed in ``rect``."""
-    cx, cy = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
-    rx, ry = max((rect[2] - rect[0]) / 2, 1e-6), max((rect[3] - rect[1]) / 2, 1e-6)
-    errs = [abs(math.hypot((x - cx) / rx, (y - cy) / ry) - 1.0) for x, y in points]
-    return sum(errs) / len(errs)
-
-
 def _point_segment_distance(p: Point, a: Point, b: Point) -> float:
     dx, dy = b[0] - a[0], b[1] - a[1]
     if dx == dy == 0:
@@ -222,6 +214,84 @@ def _ordered_chain(strokes: Sequence[Stroke]) -> List[Point]:
     return path
 
 
+def _robust_bbox(points: Sequence[Point]) -> Rect:
+    """Bounding box without the few points of corner flicks and overshoots."""
+    xs = sorted(p[0] for p in points)
+    ys = sorted(p[1] for p in points)
+    k = int(0.03 * (len(points) - 1))
+    return xs[k], ys[k], xs[-1 - k], ys[-1 - k]
+
+
+def _mean_distance(points: Sequence[Point], poly: Sequence[Point]) -> float:
+    edges = list(zip(poly, list(poly[1:]) + [poly[0]]))
+    return sum(min(_point_segment_distance(p, a, b) for a, b in edges) for p in points) / len(
+        points
+    )
+
+
+def _mean_ellipse_distance(points: Sequence[Point], rect: Rect) -> float:
+    cx, cy = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
+    rx, ry = max((rect[2] - rect[0]) / 2, 1e-6), max((rect[3] - rect[1]) / 2, 1e-6)
+    total = 0.0
+    for x, y in points:
+        rho = math.hypot((x - cx) / rx, (y - cy) / ry)
+        total += abs(rho - 1.0) * math.hypot(x - cx, y - cy) / (rho or 1e-6)
+    return total / len(points)
+
+
+def _classify_closed(points: Sequence[Point], rect: Rect, strokes: List[Stroke]) -> Shape:
+    """Rectangle, diamond, ellipse or triangle: whichever outline the ink fits.
+
+    Fitting, not corner counting: rounded corners, corner flicks, overshoot
+    and tremor all move a few points, but the ink as a whole still lies along
+    the sides of one of the outlines.
+    """
+    w, h = rect[2] - rect[0], rect[3] - rect[1]
+    size = max(w, h)
+    simple = rdp(points, max(0.12 * min(w, h), 0.03 * size))
+    if len(simple) > 2 and math.dist(simple[0], simple[-1]) < 0.25 * size:
+        simple = simple[:-1]
+    corners = [
+        simple[i]
+        for i in range(len(simple))
+        if _angle(simple[i - 1], simple[i], simple[(i + 1) % len(simple)]) < 145
+    ]
+    rb = _robust_bbox(points)
+    x0, y0, x1, y1 = rb
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    scale = max(min(x1 - x0, y1 - y0), 1e-6)
+    box = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    diamond = [(cx, y0), (x1, cy), (cx, y1), (x0, cy)]
+    fits = {
+        "ellipse": _mean_ellipse_distance(points, rb) / scale,
+        "rect": _mean_distance(points, box) / scale,
+        "diamond": _mean_distance(points, diamond) / scale,
+    }
+    # Drawn a little askew: fit the outlines to the straightened ink as well.
+    for deg in (-10.0, -5.0, 5.0, 10.0):
+        a = math.radians(deg)
+        ca, sa = math.cos(a), math.sin(a)
+        turned = [
+            (cx + (x - cx) * ca - (y - cy) * sa, cy + (x - cx) * sa + (y - cy) * ca)
+            for x, y in points
+        ]
+        tx0, ty0, tx1, ty1 = _robust_bbox(turned)
+        tcx, tcy = (tx0 + tx1) / 2, (ty0 + ty1) / 2
+        tscale = max(min(tx1 - tx0, ty1 - ty0), 1e-6)
+        tbox = [(tx0, ty0), (tx1, ty0), (tx1, ty1), (tx0, ty1)]
+        tdia = [(tcx, ty0), (tx1, tcy), (tcx, ty1), (tx0, tcy)]
+        fits["rect"] = min(fits["rect"], _mean_distance(turned, tbox) / tscale)
+        fits["diamond"] = min(fits["diamond"], _mean_distance(turned, tdia) / tscale)
+    if len(corners) == 3 and _mean_distance(points, corners) / scale < min(fits.values()):
+        return Shape("triangle", rect, strokes, corners)
+    kind = min(fits, key=fits.get)
+    if kind == "rect":
+        return Shape("rect", rect, strokes, box)
+    if kind == "diamond":
+        return Shape("diamond", rect, strokes, diamond)
+    return Shape("ellipse", rect, strokes, rdp(points, 0.05 * min(w, h)))
+
+
 def classify_outline(points: Sequence[Point], strokes: List[Stroke]) -> Optional[Shape]:
     """Classify a (possibly chained) path as a node shape or connector."""
     if len(points) < 2:
@@ -240,52 +310,50 @@ def classify_outline(points: Sequence[Point], strokes: List[Stroke]) -> Optional
     swept = _swept_angle(points, ((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2))
     closed = closure < 0.25 or swept >= 1.85 * math.pi
     if closed and length > 2.0 * size and min(w, h) > 0.08 * size:
-        # A clean ellipse is an ellipse, whatever its aspect ratio.
-        if _ellipse_error(points, rect) < 0.07:
-            return Shape("ellipse", rect, strokes, rdp(points, 0.05 * min(w, h)))
-        # Tolerance from the short side: rounded corners collapse into corners.
-        simple = rdp(points, max(0.12 * min(w, h), 0.03 * size))
-        if len(simple) > 2 and math.dist(simple[0], simple[-1]) < 0.25 * size:
-            simple = simple[:-1]
-        corners = [
-            simple[i]
-            for i in range(len(simple))
-            if _angle(simple[i - 1], simple[i], simple[(i + 1) % len(simple)]) < 145
-        ]
-        if len(corners) == 4:
-            cx, cy = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
-            mid_sides = sum(1 for x, y in corners if abs(x - cx) < 0.2 * w or abs(y - cy) < 0.2 * h)
-            kind = "diamond" if mid_sides >= 3 else "rect"
-            return Shape(kind, rect, strokes, corners)
-        if len(corners) == 3:
-            return Shape("triangle", rect, strokes, corners)
-        if _ellipse_error(points, rect) < 0.16:
-            return Shape("ellipse", rect, strokes, list(simple))
-        if len(corners) in (5, 6) and _ellipse_error(points, rect) >= 0.16:
-            return Shape("rect", rect, strokes, corners)
-        return Shape("ellipse", rect, strokes, list(simple))
+        return _classify_closed(points, rect, strokes)
 
-    simple = rdp(points, max(1.5, 0.05 * size))
+    # A fine tolerance keeps small barbs drawn in the same stroke as the line.
+    simple = rdp(points, min(max(1.0, 0.02 * size), 3.0))
     shape = Shape("line", rect, strokes, simple)
-    # Arrowhead drawn in the same stroke: the path ends by folding back sharply.
     for at_end in (True, False):
         pts = simple if at_end else list(reversed(simple))
-        if len(pts) >= 3:
-            last = math.dist(pts[-1], pts[-2])
-            body = _path_length(pts[:-1])
-            turn = _angle(pts[-3], pts[-2], pts[-1])
-            if last < 0.35 * body and turn < 60:
-                shape.kind = "arrow"
-                trimmed = pts[:-1]
-                if len(trimmed) >= 3 and _angle(trimmed[-3], trimmed[-2], trimmed[-1]) < 60:
-                    trimmed = trimmed[:-1]  # V drawn as two folds
-                shape.points = trimmed if at_end else list(reversed(trimmed))
-                if at_end:
-                    shape.head_at_end = True
-                else:
-                    shape.head_at_start = True
-                break
+        shaft_end = _in_stroke_head(pts)
+        if shaft_end is not None:
+            shape.kind = "arrow"
+            trimmed = pts[: shaft_end + 1]
+            shape.points = trimmed if at_end else list(reversed(trimmed))
+            if at_end:
+                shape.head_at_end = True
+            else:
+                shape.head_at_start = True
+            break
     return shape
+
+
+def _in_stroke_head(pts: Sequence[Point]) -> Optional[int]:
+    """Index where the shaft ends, if the path finishes with an arrowhead.
+
+    After the shaft the pen folds back sharply (< 60 degrees) and stays in a
+    small area: one barb, a V, a V retraced, a filled head.
+    """
+    total = _path_length(pts)
+    if len(pts) < 3 or total <= 0:
+        return None
+    tail = 0.0
+    best: Optional[int] = None
+    for i in range(len(pts) - 2, 0, -1):
+        tail += math.dist(pts[i], pts[i + 1])
+        if tail > 0.4 * total:
+            break
+        if any(math.dist(pts[i], q) > 0.3 * total for q in pts[i + 1 :]):
+            break
+        if _angle(pts[i - 1], pts[i], pts[i + 1]) < 60:
+            best = i  # keep walking back: a head drawn as several folds
+    if best is None or _path_length(pts[: best + 1]) < 2.0 * max(
+        math.dist(pts[best], q) for q in pts[best + 1 :]
+    ):
+        return None
+    return best
 
 
 def _v_tip(stroke: Stroke) -> Optional[List[Point]]:
@@ -302,7 +370,23 @@ def _v_tip(stroke: Stroke) -> Optional[List[Point]]:
         corners = simple[:-1]
         if len(corners) == 3:
             return corners
+    if len(simple) >= 4 and _path_length(stroke.points) >= 1.8 * size:
+        return list(simple)  # a triangle drawn untidily, or filled in: any corner
     return None
+
+
+def _points_back_along(stroke: Stroke, line: Shape, at_end: bool) -> bool:
+    """The head's ink lies behind the tip, around the shaft - not beside it."""
+    pts = line.points if at_end else list(reversed(line.points))
+    tip, before = pts[-1], pts[-2]
+    ux, uy = tip[0] - before[0], tip[1] - before[1]
+    n = math.hypot(ux, uy) or 1e-6
+    ux, uy = ux / n, uy / n
+    mx = sum(p[0] for p in stroke.points) / len(stroke.points)
+    my = sum(p[1] for p in stroke.points) / len(stroke.points)
+    along = (mx - tip[0]) * ux + (my - tip[1]) * uy
+    across = abs(-(mx - tip[0]) * uy + (my - tip[1]) * ux)
+    return along < 0 and across < -along
 
 
 def _is_arrowhead(stroke: Stroke, line: Shape, tip: Optional[List[Point]]) -> Optional[bool]:
@@ -315,10 +399,11 @@ def _is_arrowhead(stroke: Stroke, line: Shape, tip: Optional[List[Point]]) -> Op
     reach = max(6.0, 0.8 * size)
     d_end = min(math.dist(t, end) for t in tip)
     d_start = min(math.dist(t, start) for t in tip)
+    loose = len(tip) > 3  # untidy or filled head: check it sits behind the tip
     if d_end <= reach and d_end <= d_start:
-        return True
+        return True if not loose or _points_back_along(stroke, line, True) else None
     if d_start <= reach:
-        return False
+        return False if not loose or _points_back_along(stroke, line, False) else None
     return None
 
 
@@ -340,6 +425,20 @@ def _node_boundary_distance(p: Point, shape: Shape) -> float:
     if inside:
         return min(p[0] - x0, x1 - p[0], p[1] - y0, y1 - p[1])
     return rect_distance((p[0], p[1], p[0], p[1]), shape.rect)
+
+
+def _is_label_stroke(line: Shape, nodes: Sequence[Shape]) -> bool:
+    ends = (line.points[0], line.points[-1])
+    for n in nodes:
+        x0, y0, x1, y1 = n.rect
+        lx0, ly0, lx1, ly1 = line.rect
+        if not (x0 < lx0 and lx1 < x1 and y0 < ly0 and ly1 < y1):
+            continue
+        if any(_node_boundary_distance(p, n) < 6 for p in ends):
+            return False
+        others = [m for m in nodes if m is not n]
+        return not any(_node_boundary_distance(p, m) <= 14 for p in ends for m in others)
+    return False
 
 
 def recognise(
@@ -381,6 +480,14 @@ def recognise(
                     small.append(s)
             continue
         shapes.append(shape)
+
+    # A plain line well inside a box that touches no other shape is part of
+    # the box's label (an l, a 1, a t-bar, an underlined title), not an edge.
+    node_shapes = [s for s in shapes if s.is_node]
+    for c in [s for s in shapes if s.kind == "line"]:
+        if _is_label_stroke(c, node_shapes):
+            shapes.remove(c)
+            small.extend(c.strokes)
 
     # Separate arrowheads (small V strokes at a connector end).
     connectors = [s for s in shapes if not s.is_node]

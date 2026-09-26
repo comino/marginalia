@@ -471,3 +471,145 @@ def test_closed_triangle_arrowhead_makes_a_directed_edge():
     head = S([(258, 75), (248, 70), (248, 80), (258, 75)], 3)
     [edge] = recognise([a, b, shaft, head]).edges
     assert edge.directed and edge.source == "n1" and edge.target == "n2"
+
+
+# round 6: sketch outlines are fitted, not corner-counted
+def _jit(pts, amount, rng):
+    return [(x + rng.uniform(-amount, amount), y + rng.uniform(-amount, amount)) for x, y in pts]
+
+
+def _polyline(corners, step=2.0):
+    out = []
+    for a, b in zip(corners, corners[1:]):
+        n = max(2, int(math.dist(a, b) / step))
+        out += [(a[0] + (b[0] - a[0]) * t / n, a[1] + (b[1] - a[1]) * t / n) for t in range(n)]
+    return out + [corners[-1]]
+
+
+def _rot(pts, deg, c):
+    a = math.radians(deg)
+    return [
+        (
+            c[0] + (x - c[0]) * math.cos(a) - (y - c[1]) * math.sin(a),
+            c[1] + (x - c[0]) * math.sin(a) + (y - c[1]) * math.cos(a),
+        )
+        for x, y in pts
+    ]
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_small_rounded_rectangles_are_rectangles(seed):
+    rng = random.Random(seed)
+    x0, y0 = 40, 60
+    x1, y1 = x0 + rng.uniform(60, 140), y0 + rng.uniform(35, 70)
+    rad = rng.uniform(6, 14)
+    pts = []
+    for cx, cy, a0 in (
+        (x1 - rad, y0 + rad, -math.pi / 2),
+        (x1 - rad, y1 - rad, 0),
+        (x0 + rad, y1 - rad, math.pi / 2),
+        (x0 + rad, y0 + rad, math.pi),
+    ):
+        pts += arc(cx, cy, rad, rad, a0, a0 + math.pi / 2, 9)
+    pts.append(pts[0])
+    assert classify_outline(_jit(_polyline(pts), 0.4, rng), []).kind == "rect"
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_rectangle_with_overshooting_corners(seed):
+    rng = random.Random(seed)
+    x0, y0, x1, y1, o = 40, 60, 160, 110, rng.uniform(3, 8)
+    c = [(x0, y0), (x1 + o, y0), (x1, y0 - 0.5), (x1, y1 + o), (x1 + 0.5, y1)]
+    c += [(x0 - o, y1), (x0, y1 + 0.5), (x0, y0 - o)]
+    assert classify_outline(_jit(_polyline(c), 0.4, rng), []).kind == "rect"
+
+
+@pytest.mark.parametrize("deg", [-10, -6, 6, 10])
+def test_askew_rectangle_is_a_rectangle(deg):
+    rng = random.Random(deg)
+    pts = _polyline([(40, 60), (170, 60), (170, 100), (40, 100), (41, 61)])
+    pts = _rot(_jit(pts, 0.4, rng), deg, (105, 80))
+    assert classify_outline(pts, []).kind == "rect"
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_diamond_in_two_halves(seed):
+    rng = random.Random(seed)
+    x0, y0, x1, y1 = 40, 60, 40 + rng.uniform(60, 140), 60 + rng.uniform(35, 70)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    right = _jit(_polyline([(cx, y0), (x1, cy), (cx, y1)]), 0.4, rng)
+    left = _polyline([(cx + rng.uniform(-2, 2), y1 + rng.uniform(-2, 2)), (x0, cy), (cx, y0 + 1)])
+    d = recognise([S(right, 0), S(_jit(left, 0.4, rng), 1)])
+    assert [n.shape.kind for n in d.nodes] == ["diamond"]
+
+
+def _two_boxes_and_shaft(rng):
+    from test_sketch import rect_path
+
+    a = S(rect_path(40, 100, 130, 150), 0)
+    b = S(rect_path(300, 100, 390, 150), 1)
+    s, t = (133, 125), (297, 125)
+    return [a, b], _jit(_polyline([s, t]), 0.4, rng), t
+
+
+def _head(t, rng, length=9.0, spread=0.45):
+    left = (t[0] - length * math.cos(-spread), t[1] - length * math.sin(-spread))
+    right = (t[0] - length * math.cos(spread), t[1] - length * math.sin(spread))
+    return left, right
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("style", ["filled", "untidy_triangle", "v_in_stroke", "one_barb"])
+def test_arrowhead_styles_make_directed_edges(seed, style):
+    rng = random.Random(seed)
+    boxes, shaft, t = _two_boxes_and_shaft(rng)
+    left, right = _head(t, rng, rng.uniform(7, 12), rng.uniform(0.35, 0.6))
+    mid = ((left[0] + right[0]) / 2, (left[1] + right[1]) / 2)
+    if style == "filled":
+        ink = [S(shaft, 2), S(_jit(_polyline([left, t, right, left, t, mid, t], 1.0), 0.2, rng), 3)]
+    elif style == "untidy_triangle":
+        tri = _polyline([left, t, right, (left[0] + 0.8, left[1] - 0.8)], 1.0)
+        ink = [S(shaft, 2), S(_jit(tri, 0.2, rng), 3)]
+    elif style == "v_in_stroke":
+        ink = [S(shaft + _polyline([t, left, t, right], 1.0), 2)]
+    else:
+        ink = [S(shaft + _polyline([t, left], 1.0), 2)]
+    [edge] = recognise(boxes + ink).edges
+    assert edge.directed and (edge.source, edge.target) == ("n1", "n2")
+
+
+def test_filled_blob_beside_a_line_end_is_not_a_head():
+    rng = random.Random(1)
+    boxes, shaft, t = _two_boxes_and_shaft(rng)
+    # a small scribble next to the end, off to the side of the shaft
+    blob = _polyline([(t[0] - 4, t[1] - 14), (t[0] + 2, t[1] - 8), (t[0] - 4, t[1] - 9)], 1.0)
+    blob += _polyline([(t[0] - 4, t[1] - 9), (t[0] + 2, t[1] - 14), (t[0] - 3, t[1] - 12)], 1.0)
+    [edge] = recognise(boxes + [S(shaft, 2), S(blob, 3)]).edges
+    assert not edge.directed
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_long_letter_strokes_inside_a_box_are_its_label(seed):
+    from test_sketch import rect_path
+
+    rng = random.Random(seed)
+    box = S(rect_path(40, 100, 180, 160), 0)
+    ell = S(_jit(_polyline([(70, 115), (70, 115 + rng.uniform(16, 22))]), 0.2, rng), 1)
+    bar = S(_jit(_polyline([(80, 125), (80 + rng.uniform(16, 22), 125)]), 0.2, rng), 2)
+    d = recognise([box, ell, bar])
+    assert [n.shape.kind for n in d.nodes] == ["rect"] and d.edges == []
+    assert d.nodes[0].label is not None and len(d.nodes[0].label.strokes) == 2
+
+
+def test_edge_between_boxes_inside_a_container_is_kept():
+    from test_sketch import line_path, rect_path
+
+    outer = S(rect_path(20, 20, 400, 220), 0)
+    a = S(rect_path(50, 80, 140, 130), 1)
+    b = S(rect_path(260, 80, 350, 130), 2)
+    shaft = S(line_path((142, 105), (258, 105)), 3)
+    d = recognise([outer, a, b, shaft])
+    assert len(d.nodes) == 3 and len(d.edges) == 1
+    assert {d.edges[0].source, d.edges[0].target} == {
+        n.id for n in d.nodes if n.shape.rect[2] - n.shape.rect[0] < 100
+    }
