@@ -42,4 +42,7 @@ def test_workflow_prompts_registered():
     from remarkable_mcp.server import mcp
 
     names = {p.name for p in asyncio.run(mcp.list_prompts())}
-    assert {"tablet_check_in", "review_draft", "ask_on_tablet"} <= names
+    assert {
+        "tablet_check_in", "review_draft", "ask_on_tablet", "triage_on_paper",
+        "meeting_pack", "research_on_paper", "daily_ink_digest",
+    } <= names

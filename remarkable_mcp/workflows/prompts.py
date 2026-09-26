@@ -49,3 +49,63 @@ def ask_on_tablet_prompt(question: str) -> list:
         "if it is not a yes/no question, and put the background I need into context. Later, "
         "read the answer with remarkable_form_read."
     )
+
+
+@mcp.prompt(
+    name="triage_on_paper",
+    title="Triage on Paper",
+    description="Put open issues/PRs on the tablet as a tick sheet, then apply the decisions",
+)
+def triage_on_paper_prompt(source: str = "my open Linear issues") -> list:
+    return _user(
+        f"Collect {source} (use the relevant tools, e.g. Linear or gh). Send them with "
+        "remarkable_triage_send: one row per item (id, short title, one-line subtitle with type/"
+        "priority), options fitting the source (e.g. Now / Next / Later / Close). Tell me the "
+        "document name. When I say I'm done, read it with remarkable_form_read, apply every "
+        "decision in the source system, turn remarks next to a row into comments on that item, "
+        "and report what changed. Items I skipped stay untouched."
+    )
+
+
+@mcp.prompt(
+    name="meeting_pack",
+    title="Meeting Pack",
+    description="Agenda on the tablet with note space per item; afterwards file notes and actions",
+)
+def meeting_pack_prompt(meeting: str) -> list:
+    return _user(
+        f"Prepare a meeting pack for: {meeting}. Build the agenda (ask me if unclear), then send "
+        "it with remarkable_form_send: a heading, an info field with the goal, and per agenda "
+        "item one text field (4-6 lines) labelled with the topic; end with a text field "
+        "'Decisions' and one 'Action items (who · what · when)'. After the meeting, read it with "
+        "remarkable_form_read (include_images=true if notes are untranscribed), summarise per "
+        "item, and propose the action items as tasks in the right tracker for my approval."
+    )
+
+
+@mcp.prompt(
+    name="research_on_paper",
+    title="Research from the Inbox",
+    description="Answer #research questions written in the Agent Inbox with a cited brief",
+)
+def research_on_paper_prompt() -> list:
+    return _user(
+        "Call remarkable_inbox(). For each pending entry tagged #research (or ending with '?'), "
+        "research the question with the tools you have, write a short brief with sources as "
+        "Markdown, send it with remarkable_markdown_to_pdf to /Reading, and acknowledge the entry "
+        "with remarkable_inbox_done, replying with the document name."
+    )
+
+
+@mcp.prompt(
+    name="daily_ink_digest",
+    title="Daily Ink Digest",
+    description="Summarise and route everything I wrote on the tablet today",
+)
+def daily_ink_digest_prompt() -> list:
+    return _user(
+        "Call remarkable_ink_digest(since_hours=24). Summarise what I wrote per document in a few "
+        "bullets, flag anything that looks like a task, idea or question, and suggest where each "
+        "belongs (project, tracker, notes). If handwriting is untranscribed, read it with "
+        "include_images=true first. Don't move or change anything on the tablet."
+    )
