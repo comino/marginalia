@@ -29,6 +29,7 @@ dependencies = [
     "ebooklib>=0.18",
     "beautifulsoup4>=4.12.0",
     "markdown-it-py>=4.0.0",
+    "websockets>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +48,7 @@ web = [
 
 [project.scripts]
 remarkable-mcp = "remarkable_mcp.cli:main"
+remarkable-autopilot = "remarkable_mcp.workflows.autopilot:main"
 
 [build-system]
 requires = ["hatchling"]

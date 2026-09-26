@@ -580,6 +580,7 @@ def register_workflow_tools(write_enabled: bool) -> None:
     from remarkable_mcp.workflows import (  # noqa: F401  (prompts register on import)
         form_tools,
         inbox_tools,
+        live_tools,
         overview_tools,
         prompts,
         reading_tools,
@@ -587,6 +588,7 @@ def register_workflow_tools(write_enabled: bool) -> None:
     )
 
     overview_tools.register(mcp, write_enabled)
+    live_tools.register(mcp, write_enabled)
     form_tools.register(mcp, write_enabled)
     inbox_tools.register(mcp, write_enabled)
     sketch_tools.register(mcp, write_enabled)
