@@ -253,9 +253,10 @@ def trmnl_clear(force: bool = False) -> str:
 
 def trmnl_image(path: str, force: bool = False) -> str:
     """
-    <usecase>Show a full-screen image (png/jpg/bmp). Anything not already 800x480 and under 90 KB is</usecase>
+    <usecase>Show a full-screen image (png/jpg/bmp) on the display.</usecase>
     <instructions>
-    converted to a centered 800x480 1-bit PNG. Requires image_plugin_uuid in the config.
+    Anything not already 800x480 and under 90 KB is converted to a centered
+    800x480 1-bit PNG. Requires image_plugin_uuid in the config.
     </instructions>
     """
     try:
@@ -285,5 +286,5 @@ def configured() -> bool:
 
 
 def register(mcp) -> None:
-    for fn, annotations in _TOOLS:
-        mcp.tool(annotations=annotations)(fn)
+    for fn, hints in _TOOLS:
+        mcp.tool(annotations=hints)(fn)
