@@ -472,6 +472,8 @@ class FakeCloud:
             is_folder=folder,
             deleted=False,
             Type="CollectionType" if folder else "DocumentType",
+            # Like the sync API: one entry per blob, stroke pages as <doc>/<page>.rm
+            files=[{"id": f"{doc_id}.metadata", "hash": uuid.uuid4().hex}],
         )
         self.docs[doc_id] = doc
         return doc
@@ -489,6 +491,14 @@ class FakeCloud:
 
     def annotate(self, doc_id, strokes_by_page):
         self.ink[doc_id] = strokes_by_page
+        doc = self.docs[doc_id]
+        doc.hash = uuid.uuid4().hex
+        doc.files = [f for f in doc.files if not f["id"].endswith(".rm")] + [
+            {"id": f"{doc_id}/page{p}.rm", "hash": uuid.uuid4().hex} for p in strokes_by_page
+        ]
+
+    def touch(self, doc_id):
+        """Tablet-side metadata change (e.g. opened): doc hash changes, strokes don't."""
         self.docs[doc_id].hash = uuid.uuid4().hex
 
     def download(self, doc):

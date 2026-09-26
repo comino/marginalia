@@ -89,6 +89,10 @@ def ensure_folder(c, path: str) -> str:
     return parent_id
 
 
+# ink_token of a document whose file list has no stroke files.
+EMPTY_INK = hashlib.sha1(b"").hexdigest()[:16]
+
+
 def ink_token(doc) -> Optional[str]:
     """Fingerprint of a document's stroke files, from metadata alone.
 

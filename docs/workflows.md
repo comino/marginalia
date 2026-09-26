@@ -7,6 +7,7 @@ happen in the server, so a small model can run the workflows with a few calls.
 
 | Tool | What it does |
 |------|--------------|
+| `remarkable_whats_new` | One call: everything that needs attention across all workflows, with the next tool call for each |
 | `remarkable_review_send` | Render a Markdown draft as a review PDF and upload it (write mode, cloud) |
 | `remarkable_review_collect` | Turn the pen marks on a review into change requests with source lines |
 | `remarkable_review_list` | Show review rounds and which have new marks waiting |
@@ -23,6 +24,24 @@ happen in the server, so a small model can run the workflows with a few calls.
 | `remarkable_clip` | Send a web article to the tablet as a clean, annotatable PDF (write mode, cloud) |
 | `remarkable_reading_notes` | Highlights and margin notes from clipped articles → quotes with deep links |
 | `remarkable_reading_list` | Clipped articles and which have new marks |
+
+## Start here: `remarkable_whats_new`
+
+Every workflow keeps a local record of what was sent. `remarkable_whats_new()`
+checks all of them in one call, using the stroke-file hashes in the document
+metadata rather than downloading anything. It lists what changed and the tool
+call that fetches the details:
+
+```json
+{"attention": [
+  {"kind": "review", "id": "duckdb-post", "status": "annotated", "next": "remarkable_review_collect('duckdb-post')"},
+  {"kind": "form", "id": "question-ship-it-3f9a1c", "status": "annotated", "next": "remarkable_form_read('question-ship-it-3f9a1c')"}],
+ "waiting": 4, "missing": 0, "tracked": 6}
+```
+
+The `tablet_check_in` MCP prompt runs this whole loop: check, act on each item,
+acknowledge, and report. The `review_draft` and `ask_on_tablet` prompts start
+the other workflows.
 
 ## Pen review round-trip
 

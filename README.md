@@ -435,6 +435,7 @@ Or copy the `SKILL.md` from this repository into your `~/.openclaw/skills/remark
 | `remarkable_inbox*` | Handwritten requests in an "Agent Inbox" become agent tasks |
 | `remarkable_sketch` / `remarkable_regions` | Hand-drawn diagrams → graph + Mermaid; page ink → regions |
 | `remarkable_clip` / `remarkable_reading_*` | Web articles → tablet; highlights → quotes with deep links |
+| `remarkable_whats_new` | One call: what needs attention across all workflows |
 
 The read/search/render tools are read-only. `remarkable_export` never changes the
 tablet, but it writes a bounded temporary file on the MCP server host and therefore
