@@ -287,6 +287,18 @@ def test_tick_between_two_boxes_is_not_a_confident_answer(form):
     assert ans.status in ("ambiguous", "empty") and ans.status != "answered"
 
 
+@pytest.mark.parametrize("option", ["Yes", "Later", "No"])
+@pytest.mark.parametrize("scale", [1.4, 1.8])
+def test_big_tick_drawn_up_right_of_its_box(form, option, scale):
+    # the tick starts in the box and its long stroke runs up and right, so
+    # its centre lies outside the box's neighbourhood
+    r = next(a for a in form.areas if a.option == option).rect
+    side = r[2] - r[0]
+    tick = _tick(r, dx=0.3 * side, dy=-0.5 * side, scale=scale)
+    ans = _answers(form, [tick])["c"]
+    assert (ans.value, ans.status) == (option, "answered")
+
+
 def test_tick_crossed_out_then_another_ticked(form):
     yes = next(a for a in form.areas if a.option == "Yes").rect
     no = next(a for a in form.areas if a.option == "No").rect

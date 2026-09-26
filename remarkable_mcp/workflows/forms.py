@@ -557,6 +557,21 @@ def _enclosure_owner(stroke: Stroke, areas: Sequence[AnswerArea]) -> Optional[An
     )
 
 
+def _grown(r: Rect, pad: float = 2.0) -> Rect:
+    return (r[0] - pad, r[1] - pad, r[2] + pad, r[3] + pad)
+
+
+def _mostly_in_one(stroke: Stroke, area: AnswerArea, areas: Sequence[AnswerArea]) -> bool:
+    """A mark drawn off-centre (e.g. a big tick whose tip is in the box):
+    a good part of the stroke is in this box and none of it in another."""
+    length = stroke_features(stroke).length or 1.0
+    if ink_length_in(_grown(area.rect), [stroke]) < 0.3 * length:
+        return False
+    return not any(
+        ink_length_in(_grown(b.rect), [stroke]) > 0.1 * length for b in areas if b is not area
+    )
+
+
 def score_areas(areas: Sequence[AnswerArea], pages: Dict[int, PageInk]) -> List[AreaScore]:
     """Ink and circling per answer area.
 
@@ -573,13 +588,14 @@ def score_areas(areas: Sequence[AnswerArea], pages: Dict[int, PageInk]) -> List[
             o = _enclosure_owner(st, page_areas)
             if o is not None:
                 owner[id(st)] = o
+    page_areas_of = by_page
     scores = []
     for a in areas:
         page = pages.get(a.page)
         strokes = page.strokes if page else []
         plain = [st for st in strokes if id(st) not in owner]
         side = max(a.rect[2] - a.rect[0], a.rect[3] - a.rect[1])
-        grown = (a.rect[0] - 2, a.rect[1] - 2, a.rect[2] + 2, a.rect[3] + 2)
+        grown = _grown(a.rect)
         ink = ink_length_in(grown, plain) / (side or 1)
         near = (
             a.rect[0] - 0.3 * side,
@@ -587,7 +603,11 @@ def score_areas(areas: Sequence[AnswerArea], pages: Dict[int, PageInk]) -> List[
             a.rect[2] + 0.3 * side,
             a.rect[3] + 0.3 * side,
         )
-        centred = [st for st in plain if _inside(_centre(st.bbox), near)]
+        centred = [
+            st
+            for st in plain
+            if _inside(_centre(st.bbox), near) or _mostly_in_one(st, a, page_areas_of[a.page])
+        ]
         centred_ink = ink_length_in(grown, centred) / (side or 1)
         strokes_in = sum(1 for st in plain if ink_length_in(grown, [st]) / (side or 1) >= 0.3)
         circled = any(owner.get(id(st)) is a for st in strokes)
