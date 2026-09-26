@@ -133,14 +133,14 @@ class TestMCPServerInitialization:
     @pytest.mark.asyncio
     async def test_tools_count(self):
         """Cloud default: 7 read/export tools + always-on canvas + 6 write tools
-        + 21 workflow tools (annotations, review x3, forms x3, ask, inbox x3, sketch,
-        regions, reading x3, whats_new, live x2, clarify, triage).
+        + 23 workflow tools (annotations, review x3, forms x3, ask, inbox x3, sketch,
+        regions, reading x3, whats_new, live x2, clarify, triage, code review x2).
 
         ``remarkable_author`` is SSH-only and therefore hidden in cloud mode, so
-        the default cloud surface is 35 tools.
+        the default cloud surface is 37 tools.
         """
         tools = [t for t in await _list_tools() if not t.name.startswith("trmnl_")]
-        assert len(tools) == 35, f"Expected 35 tools, got {len(tools)}"
+        assert len(tools) == 37, f"Expected 37 tools, got {len(tools)}"
 
     @pytest.mark.asyncio
     async def test_tool_schemas(self):
@@ -1587,7 +1587,7 @@ class TestE2E:
         """Test that server can list all tools (e2e)."""
         tools = [t for t in await _list_tools() if not t.name.startswith("trmnl_")]
 
-        assert len(tools) == 35
+        assert len(tools) == 37
 
         # Check each tool has required properties and starts with remarkable_
         for tool in tools:
