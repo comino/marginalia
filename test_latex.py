@@ -105,3 +105,60 @@ def test_send_requires_synctex(tmp_path, cloud):  # noqa: F811
         _json_of(asyncio.run(t.remarkable_latex_review_send(str(pdf))))["_error"]["type"]
         == "no_synctex"
     )
+
+
+def test_cropbox_pdfs_map_correctly(tmp_path):
+    (tmp_path / "chapters").mkdir()
+    (tmp_path / "main.tex").write_text(
+        MAIN.replace(
+            r"\begin{document}",
+            r"\pdfpageattr{/CropBox [40 60 555 800]}" + "\n" + r"\begin{document}",
+        )
+    )
+    (tmp_path / "chapters" / "method.tex").write_text(METHOD)
+    subprocess.run(
+        ["pdflatex", "-synctex=1", "-interaction=nonstopmode", "main.tex"],
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=120,
+        check=True,
+    )
+    pdf = tmp_path / "main.pdf"
+    data = pdf.read_bytes()
+    pno, rects = _phrase_rects(data, "coupling strength")
+    ink = load_document_ink_from_zip(_doc_zip(data, {pno: [(_strike(rects), FINELINER, 515.0)]}))
+    [req] = collect_tex_requests(pdf, {p.pdf_page + 1: p for p in ink.pages})
+    assert Path(req.file).name == "method.tex" and req.line == 2
+
+
+def test_refine_prefers_the_synctex_line_and_whole_words():
+    from remarkable_mcp.workflows.latex_review import _refine
+
+    text = "the model is big\nremodelling the house\nour model works well\n"
+    assert _refine(text, 3, "model") == 3  # SyncTeX's line already matches
+    assert _refine(text, 2, "our model works") == 3  # nearest real match
+    assert _refine(text, 2, "unrelated words") == 2  # no match: keep SyncTeX
+
+
+def test_collect_uses_the_compiled_sources(tex, cloud):  # noqa: F811
+    from remarkable_mcp.workflows import latex_tools as t
+
+    sent = _json_of(asyncio.run(t.remarkable_latex_review_send(str(tex / "main.pdf"), "Snap")))
+    original = (tex / "chapters" / "method.tex").read_text()
+    (tex / "chapters" / "method.tex").write_text(
+        "% inserted line\n" + original
+    )  # edited after send
+    try:
+        doc = next(d for d in cloud.docs.values() if d.VissibleName == "Snap")
+        data = cloud.zips[doc.id]
+        pno, rects = _phrase_rects(data, "five random seeds")
+        cloud.annotate(doc.id, {pno: [(_strike(rects), FINELINER, 595.0)]})
+        peek = _json_of(
+            asyncio.run(t.remarkable_latex_review_collect(sent["review"], mark_seen=False))
+        )
+        [req] = peek["requests"]
+        assert req["line"] == 4 and "five random seeds" in req["source"]
+        again = _json_of(asyncio.run(t.remarkable_latex_review_collect(sent["review"])))
+        assert len(again["requests"]) == 1  # the peek did not consume it
+    finally:
+        (tex / "chapters" / "method.tex").write_text(original)

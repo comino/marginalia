@@ -47,11 +47,13 @@ from remarkable_mcp.workflows.state import Store, state_root
 
 logger = logging.getLogger("remarkable_autopilot")
 
+
 def config_path() -> Path:
     return Path(
         os.environ.get("REMARKABLE_AUTOPILOT_CONFIG")
         or Path.home() / ".config" / "remarkable-mcp" / "autopilot.json"
     )
+
 
 DEFAULTS = {
     "agent_command": None,

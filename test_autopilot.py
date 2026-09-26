@@ -13,6 +13,7 @@ def isolated_state(tmp_path, monkeypatch):
     """Never read or write the real ~/.local/state from tests."""
     monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
 
+
 ATT = {
     "attention": [
         {

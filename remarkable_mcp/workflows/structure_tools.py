@@ -258,8 +258,14 @@ def _digest_store() -> Store:
     return Store("ink-digest")
 
 
+MAX_DIGEST_PAGES = 6
+
+
 async def remarkable_ink_digest(
-    since_hours: float = 24.0, max_documents: int = 8, include_images: bool = False
+    since_hours: float = 24.0,
+    max_documents: int = 8,
+    include_images: bool = False,
+    mark_seen: bool = True,
 ):
     """
     <usecase>What did I write on the tablet recently? A per-page digest of new ink.</usecase>
@@ -275,6 +281,9 @@ async def remarkable_ink_digest(
     - since_hours: Look-back window (default 24).
     - max_documents: Most recently modified documents to include (default 8).
     - include_images: Attach a crop per text block.
+    - mark_seen: Remember the reported pages (default true). Only pages that
+      were actually reported are remembered; the rest come in the next digest.
+      Use false to peek (e.g. again with include_images=true).
     </parameters>
     """
     store = _digest_store()
@@ -292,7 +301,8 @@ async def remarkable_ink_digest(
             lm = getattr(it, "last_modified", None) or getattr(it, "ModifiedClient", None)
             if lm is None:
                 return None
-            return lm if lm.tzinfo else lm.replace(tzinfo=timezone.utc)
+            # Naive timestamps from the sync client are local time.
+            return lm if lm.tzinfo else lm.astimezone(timezone.utc)
 
         recent = [
             it
@@ -306,7 +316,12 @@ async def remarkable_ink_digest(
         ]
         recent.sort(key=lambda it: modified(it), reverse=True)
         docs_out, images = [], []
-        for it in recent[:max_documents]:
+        reported: dict = {}  # doc id -> {stroke file id: hash} actually reported
+        skipped_docs = 0
+        for it in recent:
+            if len(docs_out) >= max_documents:
+                skipped_docs += 1
+                continue
             pages_now = snap[it.ID].pages
             before = previous.get(it.ID, {})
             changed_ids = [
@@ -323,7 +338,14 @@ async def remarkable_ink_digest(
                 from remarkable_mcp.extract import _get_page_order
 
                 order = _get_page_order(Path(tmp))
-            numbers = sorted({order.index(p) + 1 for p in changed_ids if p in order})[:6]
+            all_numbers = sorted({order.index(p) + 1 for p in changed_ids if p in order})
+            numbers = all_numbers[:MAX_DIGEST_PAGES]
+            done_ids = {order[n - 1] for n in numbers}
+            reported[it.ID] = {
+                fid: h
+                for fid, h in pages_now.items()
+                if fid.rsplit("/", 1)[-1].removesuffix(".rm") in done_ids
+            }
             with cloud.MUPDF_LOCK:
                 ink = load_document_ink_from_zip(zip_bytes, numbers)
             pages_out = []
@@ -349,24 +371,36 @@ async def remarkable_ink_digest(
                 if include_images:
                     images += [(f"{it.VissibleName} p{pg.page}", "block", p) for p in pngs]
             if pages_out:
-                docs_out.append(
-                    {
-                        "document": it.VissibleName,
-                        "path": get_item_path(it, by_id),
-                        "modified": modified(it).isoformat(timespec="minutes"),
-                        "pages": pages_out,
-                    }
-                )
-        return snap, docs_out, images
+                entry = {
+                    "document": it.VissibleName,
+                    "path": get_item_path(it, by_id),
+                    "modified": modified(it).isoformat(timespec="minutes"),
+                    "pages": pages_out,
+                }
+                if len(all_numbers) > len(numbers):
+                    entry["more_pages"] = len(all_numbers) - len(numbers)
+                docs_out.append(entry)
+        return reported, docs_out, images, skipped_docs
 
     try:
-        snap, docs_out, images = await asyncio.to_thread(work)
+        reported, docs_out, images, skipped_docs = await asyncio.to_thread(work)
     except Exception as exc:
         return make_error("digest_failed", str(exc), "Check remarkable_status().")
 
-    store.put("last", {"at": now_iso(), "pages": {k: v.pages for k, v in snap.items()}})
+    if mark_seen:
+
+        def remember(cur):
+            cur = cur or {"pages": {}}
+            for doc_id, pages in reported.items():
+                cur["pages"].setdefault(doc_id, {}).update(pages)
+            cur["at"] = now_iso()
+            return cur
+
+        store.update("last", remember)
     untranscribed = sum(1 for d in docs_out for p in d["pages"] for t in p["text"] if t is None)
     hint = f"{len(docs_out)} document(s) with new ink since the last digest."
+    if skipped_docs or any(d.get("more_pages") for d in docs_out):
+        hint += " More new ink remains; call again to continue."
     if untranscribed and not include_images:
         hint += f" {untranscribed} text block(s) untranscribed; include_images=true shows them."
     payload = make_response(

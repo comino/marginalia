@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 import uuid
 from typing import List, Optional
@@ -45,15 +46,38 @@ def _store() -> Store:
     return Store("code-reviews")
 
 
+_PR = re.compile(r"^(\d+|https://github\.com/[\w.-]+/[\w.-]+/pull/\d+)$")
+_REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
+_REF = re.compile(r"^[\w./@{}^~-]+$")
+
+
 def _get_diff(pr, repo, repo_path, base, paths) -> str:
+    """Fetch the diff. Every user-supplied value is validated so none can be
+    read as an option by git/gh (e.g. base="--output=/some/file")."""
     if pr is not None:
+        if not _PR.match(str(pr)):
+            raise ValueError("pr must be a number or a GitHub pull request URL.")
         cmd = ["gh", "pr", "diff", str(pr)]
         if repo:
+            if not _REPO.match(repo):
+                raise ValueError("repo must look like owner/name.")
             cmd += ["-R", repo]
     else:
         if not repo_path:
             raise ValueError("Pass pr= (GitHub) or repo_path= (local git diff).")
-        cmd = ["git", "-C", repo_path, "diff", f"{base}...HEAD"]
+        if not _REF.match(base) or base.startswith("-"):
+            raise ValueError(f"Not a valid git ref: {base!r}")
+        cmd = [
+            "git",
+            "-C",
+            repo_path,
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            f"{base}...HEAD",
+        ]
         if paths:
             cmd += ["--", *paths]
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=60, cwd=repo_path or None)
@@ -158,7 +182,7 @@ async def remarkable_code_review_send(
 
 
 async def remarkable_code_review_collect(
-    review: str, only_new: bool = True, include_images: bool = False
+    review: str, only_new: bool = True, include_images: bool = False, mark_seen: bool = True
 ):
     """
     <usecase>Turn pen marks on a code review into GitHub review comments.</usecase>
@@ -168,13 +192,18 @@ async def remarkable_code_review_collect(
     "event". Post them with the gh CLI, e.g.
     gh api repos/OWNER/REPO/pulls/N/reviews --input review.json
     where review.json = {"event": ..., "body": ..., "comments": [...]}.
-    Notes without a handwriting backend have body placeholders: call with
-    include_images=true and write the body from the crop.
+    Handwriting away from any code line (e.g. a summary under the diff) is
+    returned as "general" remarks for the review body; ticks on the verdict
+    boxes are the verdict, never comments.
+    Notes without a handwriting backend have body placeholders: call again
+    with include_images=true, only_new=false, mark_seen=false and write the
+    bodies from the crops.
     </instructions>
     <parameters>
     - review: Id from remarkable_code_review_send.
     - only_new: Only marks not returned before (default true).
     - include_images: Attach crops of handwritten notes.
+    - mark_seen: Remember returned marks (default true); false to peek.
     </parameters>
     """
     store = _store()
@@ -192,24 +221,26 @@ async def remarkable_code_review_collect(
         with cloud.MUPDF_LOCK:
             ink = load_document_ink_from_zip(zip_bytes)
         pages = {p.pdf_page + 1: p for p in ink.pages if p.pdf_page is not None}
-        comments = collect_comments(pages, record["rows"])
+        comments, general = collect_comments(pages, record["rows"], exclude=record["verdict_areas"])
         verdict = read_verdict(record["verdict_areas"], pages)
         seen = set(record.get("seen_strokes", []))
         if only_new:  # stroke-level: a note added later to a seen mark is new again
             comments = [c for c in comments if not set(c.seen_keys) <= seen]
+            general = [c for c in general if not set(c.seen_keys) <= seen]
+        everything = comments + general
         crops = [
             handwriting.render_strokes_png(c.note_strokes, c.note_rect) if c.note_strokes else None
-            for c in comments
+            for c in everything
         ]
         todo = [i for i, cr in enumerate(crops) if cr is not None]
         texts = handwriting.transcribe_many(
-            [crops[i] for i in todo], strokes=[comments[i].note_strokes for i in todo]
+            [crops[i] for i in todo], strokes=[everything[i].note_strokes for i in todo]
         )
         text_at = {i: t for i, (t, _) in zip(todo, texts)}
-        return doc, comments, verdict, crops, text_at
+        return doc, comments, general, verdict, crops, text_at
 
     try:
-        doc, comments, verdict, crops, text_at = await asyncio.to_thread(work)
+        doc, comments, general, verdict, crops, text_at = await asyncio.to_thread(work)
     except LookupError:
         return make_error("document_missing", "The review document is gone.", "Send it again.")
     except Exception as exc:
@@ -231,20 +262,32 @@ async def remarkable_code_review_collect(
             if include_images:
                 images.append((c.mark_id, f"note on {c.path}:{c.line}", crops[i]))
         out.append(item)
+    remarks = []
+    for j, c in enumerate(general, start=len(comments)):
+        if not c.note_strokes:
+            continue  # a stray tick or line away from the code carries no message
+        remarks.append({"id": c.mark_id, "note": text_at.get(j)})
+        if include_images:
+            images.append((c.mark_id, "general remark", crops[j]))
 
     def merge(cur):
         if cur is None:
             return None
-        seen = set(cur.get("seen_strokes", []))
-        seen.update(k for c in comments for k in c.seen_keys)
-        cur["seen_strokes"] = sorted(seen)
-        cur["last_read"] = {"at": now_iso(), "ink": cloud.ink_token(doc)}
+        if mark_seen:
+            seen = set(cur.get("seen_strokes", []))
+            seen.update(k for c in comments + general for k in c.seen_keys)
+            cur["seen_strokes"] = sorted(seen)
+            cur["last_read"] = {"at": now_iso(), "ink": cloud.ink_token(doc)}
         return cur
 
     store.update(review, merge)
+    body = "Reviewed on paper (reMarkable)."
+    written = [r["note"] for r in remarks if r["note"]]
+    if written:
+        body += "\n\n" + "\n\n".join(written)
     gh = {
         "event": github_event(verdict),
-        "body": "Reviewed on paper (reMarkable).",
+        "body": body,
         "comments": [{k: c[k] for k in ("path", "line", "side", "body")} for c in out],
     }
     hint = f"{len(out)} comment(s), verdict: {verdict or 'none ticked'}."
@@ -254,9 +297,13 @@ async def remarkable_code_review_collect(
             "--input <file with the 'github' object>."
         )
     if any(c.get("note_status") == "not_transcribed" for c in out) and not include_images:
-        hint += " Some notes need include_images=true to be read."
+        hint += (
+            " Some notes are untranscribed: call again with include_images=true, "
+            "only_new=false, mark_seen=false to read them."
+        )
     payload = make_response(
-        {"review": review, "verdict": verdict, "comments": out, "github": gh}, hint
+        {"review": review, "verdict": verdict, "comments": out, "general": remarks, "github": gh},
+        hint,
     )
     return cloud.with_images(payload, images) if images else payload
 

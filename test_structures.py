@@ -113,3 +113,39 @@ def test_ink_digest_reports_only_new_pages(cloud):  # noqa: F811
     again = _json_of(asyncio.run(st.remarkable_ink_digest()))
     pages = [p["page"] for p in again["documents"][0]["pages"]]
     assert 3 in pages
+
+
+def test_ink_digest_never_drops_unreported_pages(cloud):  # noqa: F811
+    from remarkable_mcp.workflows import structure_tools as st
+
+    doc = pymupdf.open()
+    for _ in range(9):
+        doc.new_page(width=446, height=595)
+    nb = cloud.upload_document(doc.tobytes(), "Long notebook", "pdf")
+    cloud.annotate(
+        nb.id, {i: [(p, FINELINER, 446.0) for p in _handwriting(40, 60, words=2)] for i in range(9)}
+    )
+    peek = _json_of(asyncio.run(st.remarkable_ink_digest(mark_seen=False)))
+    assert [p["page"] for p in peek["documents"][0]["pages"]] == [1, 2, 3, 4, 5, 6]
+    first = _json_of(asyncio.run(st.remarkable_ink_digest()))
+    assert first["documents"][0]["more_pages"] == 3 and "call again" in first["_hint"]
+    rest = _json_of(asyncio.run(st.remarkable_ink_digest()))
+    assert [p["page"] for p in rest["documents"][0]["pages"]] == [7, 8, 9]
+    assert _json_of(asyncio.run(st.remarkable_ink_digest()))["documents"] == []
+
+
+def test_table_with_rules_drawn_per_cell():
+    strokes = []
+    x0, y0, cw, rh, rows, cols = 40, 60, 70, 30, 3, 3
+    for r in range(rows + 1):  # horizontal rules drawn one cell at a time
+        for c in range(cols):
+            strokes.append(
+                S(line_path((x0 + c * cw + 1, y0 + r * rh), (x0 + (c + 1) * cw - 1, y0 + r * rh)))
+            )
+    for c in range(cols + 1):  # vertical rules drawn one cell at a time
+        for r in range(rows):
+            strokes.append(
+                S(line_path((x0 + c * cw, y0 + r * rh + 1), (x0 + c * cw, y0 + (r + 1) * rh - 1)))
+            )
+    t = find_table(strokes)
+    assert t is not None and t.shape == (3, 3)

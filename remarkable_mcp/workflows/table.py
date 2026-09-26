@@ -19,7 +19,7 @@ from remarkable_mcp.workflows.ink import Rect, Stroke
 from remarkable_mcp.workflows.marks import _union
 from remarkable_mcp.workflows.sketch import classify_outline, rect_distance
 
-MIN_RULE = 36.0  # points; shorter straight strokes are writing (dashes, t-bars)
+MIN_RULE = 24.0  # points; shorter straight strokes are writing (dashes, t-bars)
 
 
 @dataclass
@@ -77,6 +77,22 @@ def _cluster_positions(values: Sequence[float], tol: float) -> List[float]:
     return [sum(g) / len(g) for g in out]
 
 
+def _covered(intervals: Sequence[Tuple[float, float]], gap: float = 8.0) -> float:
+    """Total length covered by intervals, bridging pen lifts shorter than ``gap``."""
+    total, cur = 0.0, None
+    for a, b in sorted(intervals):
+        if cur is None:
+            cur = [a, b]
+        elif a <= cur[1] + gap:
+            cur[1] = max(cur[1], b)
+        else:
+            total += cur[1] - cur[0]
+            cur = [a, b]
+    if cur is not None:
+        total += cur[1] - cur[0]
+    return total
+
+
 def find_table(strokes: Sequence[Stroke], region: Optional[Rect] = None) -> Optional[Table]:
     pool = [s for s in strokes if not s.is_highlighter and len(s.points) >= 2]
     if region is not None:
@@ -107,12 +123,18 @@ def find_table(strokes: Sequence[Stroke], region: Optional[Rect] = None) -> Opti
     if len(ys) < 2 or len(xs) < 2:
         return None
     # Rules must span most of the table to count (ignores stray long strokes).
+    # A rule may be drawn in several segments (one per cell): measure the
+    # union of all segments at that position, not the longest single stroke.
     span_x, span_y = xs[-1] - xs[0], ys[-1] - ys[0]
     ys = [
-        y for y in ys if any(abs(r[0] - y) <= 7 and (r[2] - r[1]) >= 0.5 * span_x for r in h_rules)
+        y
+        for y in ys
+        if _covered([(r[1], r[2]) for r in h_rules if abs(r[0] - y) <= 7]) >= 0.5 * span_x
     ]
     xs = [
-        x for x in xs if any(abs(r[0] - x) <= 7 and (r[2] - r[1]) >= 0.5 * span_y for r in v_rules)
+        x
+        for x in xs
+        if _covered([(r[1], r[2]) for r in v_rules if abs(r[0] - x) <= 7]) >= 0.5 * span_y
     ]
     if len(ys) < 2 or len(xs) < 2:
         return None

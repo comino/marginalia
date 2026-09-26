@@ -30,7 +30,7 @@ TOP = 40.0
 BOTTOM = PAGE_H - 30.0
 CHARS = int((PAGE_W - NOTE_MARGIN - CODE_X) / (0.6 * FONT))
 VERDICTS = ["Approve", "Request changes", "Comment"]
-_HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$")
+_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
 
 
 @dataclass
@@ -47,43 +47,103 @@ class DiffFile:
     hunks: List[Tuple[str, List[DiffLine]]] = field(default_factory=list)  # (header, lines)
 
 
+def _unquote_git_path(path: str) -> str:
+    """Undo git's C-style path quoting ("b/\\303\\274.txt" -> "b/ü.txt")."""
+    if not (len(path) >= 2 and path[0] == '"' and path[-1] == '"'):
+        return path
+    raw = path[1:-1]
+    out = bytearray()
+    i = 0
+    simple = {
+        "n": b"\n",
+        "t": b"\t",
+        '"': b'"',
+        "\\": b"\\",
+        "a": b"\a",
+        "b": b"\b",
+        "f": b"\f",
+        "r": b"\r",
+        "v": b"\v",
+    }
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\\" and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            if nxt in "01234567" and i + 3 < len(raw) + 1:
+                out.append(int(raw[i + 1 : i + 4], 8))
+                i += 4
+                continue
+            out += simple.get(nxt, nxt.encode())
+            i += 2
+            continue
+        out += ch.encode()
+        i += 1
+    return out.decode("utf-8", "replace")
+
+
+def _strip_prefix(path: str, prefix: str) -> str:
+    path = _unquote_git_path(path.split("\t", 1)[0].strip())
+    return path[2:] if path.startswith(prefix) else path
+
+
 def parse_diff(diff: str) -> List[DiffFile]:
+    """Parse a unified diff (git or plain) into files, hunks and numbered lines.
+
+    Hunk bodies are consumed by the line counts announced in each ``@@``
+    header, so content lines that happen to start with ``---``/``+++`` (a
+    removed ``-- SQL comment``, an added ``++i``) are never mistaken for file
+    headers. Only ``\\n`` splits lines: form feeds and other exotic line
+    separators inside source lines stay inside them.
+    """
     files: List[DiffFile] = []
     cur: Optional[DiffFile] = None
+    old_path: Optional[str] = None
     old = new = 0
-    for raw in diff.splitlines():
+    old_left = new_left = 0  # lines still expected in the current hunk
+    for raw in diff.split("\n"):
+        if raw.endswith("\r"):
+            raw = raw[:-1]
+        if (old_left > 0 or new_left > 0) and raw.startswith("diff --git "):
+            old_left = new_left = 0  # truncated hunk: the next file starts here
+        if old_left > 0 or new_left > 0:
+            if raw.startswith("\\"):
+                continue  # "\ No newline at end of file"
+            tag, text = (raw[:1] or " "), raw[1:]
+            lines = cur.hunks[-1][1]
+            if tag == "+":
+                lines.append(DiffLine("+", text, None, new))
+                new += 1
+                new_left -= 1
+            elif tag == "-":
+                lines.append(DiffLine("-", text, old, None))
+                old += 1
+                old_left -= 1
+            else:
+                lines.append(DiffLine(" ", text, old, new))
+                old += 1
+                new += 1
+                old_left -= 1
+                new_left -= 1
+            continue
         if raw.startswith("diff --git "):
-            cur = None
+            cur, old_path = None, None
+            continue
+        if raw.startswith("--- "):
+            old_path = _strip_prefix(raw[4:], "a/")
             continue
         if raw.startswith("+++ "):
-            path = raw[4:].strip()
-            path = path[2:] if path.startswith("b/") else path
-            if path == "/dev/null":
-                path = "(deleted file)"
+            path = _strip_prefix(raw[4:], "b/")
+            if path == "/dev/null":  # deleted file: comment on its old path
+                path = old_path or path
             cur = DiffFile(path)
             files.append(cur)
             continue
-        if raw.startswith("--- ") or cur is None:
-            continue
         m = _HUNK.match(raw)
-        if m:
-            old, new = int(m.group(1)), int(m.group(2))
-            cur.hunks.append((m.group(3).strip(), []))
-            continue
-        if not cur.hunks or raw.startswith("\\"):
-            continue
-        tag, text = (raw[:1] or " "), raw[1:]
-        lines = cur.hunks[-1][1]
-        if tag == "+":
-            lines.append(DiffLine("+", text, None, new))
-            new += 1
-        elif tag == "-":
-            lines.append(DiffLine("-", text, old, None))
-            old += 1
-        else:
-            lines.append(DiffLine(" ", text, old, new))
-            old += 1
-            new += 1
+        if m and cur is not None:
+            old, new = int(m.group(1)), int(m.group(3))
+            old_left = int(m.group(2)) if m.group(2) is not None else 1
+            new_left = int(m.group(4)) if m.group(4) is not None else 1
+            cur.hunks.append((m.group(5).strip(), []))
     return [f for f in files if f.hunks]
 
 
@@ -137,9 +197,8 @@ def render_diff(title: str, files: Sequence[DiffFile], subtitle: str = "") -> Co
                 )
                 state["y"] += LINE_H
             for dl in lines:
-                chunks = [
-                    dl.text[i : i + CHARS] for i in range(0, max(len(dl.text), 1), CHARS)
-                ] or [""]
+                text = dl.text.expandtabs(4)  # before wrapping, so wrapped rows fit the column
+                chunks = [text[i : i + CHARS] for i in range(0, max(len(text), 1), CHARS)] or [""]
                 for n, chunk in enumerate(chunks):
                     need(LINE_H)
                     page, y = state["page"], state["y"]
@@ -166,7 +225,7 @@ def render_diff(title: str, files: Sequence[DiffFile], subtitle: str = "") -> Co
                         )
                     page.insert_text(
                         (CODE_X, y + 7),
-                        chunk.expandtabs(4),
+                        chunk,
                         fontsize=FONT,
                         fontname="cour",
                         color=grey if dl.kind == "-" else (0, 0, 0),
@@ -231,37 +290,67 @@ class LineComment:
     seen_keys: List[str] = field(default_factory=list)
 
 
-def collect_comments(pages: Dict[int, PageInk], rows: Sequence[dict]) -> List[LineComment]:
-    """Marks on the diff pages -> comments on (path, line, side)."""
-    out: List[LineComment] = []
+def collect_comments(
+    pages: Dict[int, PageInk],
+    rows: Sequence[dict],
+    exclude: Sequence[dict] = (),
+) -> Tuple[List[LineComment], List[LineComment]]:
+    """Marks on the diff pages -> (line comments, general remarks).
+
+    A mark belongs to a line only if it sits on or right next to that row.
+    Marks on the verdict boxes (``exclude``: manifest areas) are the verdict,
+    not comments; handwriting away from any row (e.g. a summary under the last
+    file) is a general remark for the review body, not a comment on whatever
+    line happens to be nearest.
+    """
+    comments: List[LineComment] = []
+    general: List[LineComment] = []
     row_index = {f"row{i}": r for i, r in enumerate(rows)}
     for pno, page in sorted(pages.items()):
         blocks = _row_blocks(rows, pno)
         if not blocks:
             continue
+        keep_out = [
+            (a["rect"][0] - 16, a["rect"][1] - 16, a["rect"][2] + 16, a["rect"][3] + 16)
+            for a in exclude
+            if a["page"] == pno
+        ]
         for mark in analyze_page(page, blocks):
-            ids = [b for b in mark.block_ids if b in row_index]
-            if not ids:
-                continue
-            # Comment on the last line the mark covers (GitHub anchors below it).
-            row = row_index[ids[-1]]
-            if row["line"] is None:
+            if any(_overlaps(mark.rect, r) for r in keep_out):
                 continue
             note = mark if mark.kind == "note" else mark.note
-            out.append(
-                LineComment(
-                    path=row["path"],
-                    line=row["line"],
-                    side=row["side"],
-                    kind=mark.kind,
-                    target=mark.target_text,
-                    mark_id=mark.id,
-                    note_strokes=list(note.strokes) if note else [],
-                    note_rect=note.rect if note else None,
-                    seen_keys=mark.seen_keys,
-                )
+            item = LineComment(
+                path="",
+                line=0,
+                side="RIGHT",
+                kind=mark.kind,
+                target=mark.target_text,
+                mark_id=mark.id,
+                note_strokes=list(note.strokes) if note else [],
+                note_rect=note.rect if note else None,
+                seen_keys=mark.seen_keys,
             )
-    return out
+            ids = [b for b in mark.block_ids if b in row_index]
+            row = row_index[ids[-1]] if ids else None  # GitHub anchors below the last line
+            near = row is not None and _vertical_gap(mark.rect, row) <= 1.5 * LINE_H
+            if not near or row["line"] is None:
+                general.append(item)
+                continue
+            item.path, item.line, item.side = row["path"], row["line"], row["side"]
+            comments.append(item)
+    return comments, general
+
+
+def _overlaps(a, b) -> bool:
+    return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+
+
+def _vertical_gap(rect, row: dict) -> float:
+    if rect[3] < row["y0"]:
+        return row["y0"] - rect[3]
+    if rect[1] > row["y1"]:
+        return rect[1] - row["y1"]
+    return 0.0
 
 
 def comment_body(c: LineComment, note_text: Optional[str]) -> str:

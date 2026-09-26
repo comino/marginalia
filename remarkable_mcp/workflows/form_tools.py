@@ -182,19 +182,29 @@ async def remarkable_ask(
         return make_error("send_failed", str(exc), "Check remarkable_status().")
 
 
-def _mark_crop(review: Optional[str], document: Optional[str], request_id: str):
+def _mark_crop(
+    review: Optional[str], document: Optional[str], request_id: str, version: Optional[int] = None
+):
     """(png of the mark with its page underneath, target text) for a request id."""
     from remarkable_mcp.api import get_items_by_id
     from remarkable_mcp.workflows.review import collect_requests
     from remarkable_mcp.workflows.state import Store as _Store
 
     c = cloud.client()
+    cloud.refresh(c)  # the mark was just made: don't read a stale document
     blocks = layout = source = None
     if review:
         rec = _Store("reviews").get(slugify(review))
         if rec is None:
             raise LookupError(f"review '{review}'")
-        entry = rec["versions"][-1]
+        versions = rec["versions"]
+        entry = (
+            next((v for v in versions if v["version"] == version), None)
+            if version
+            else versions[-1]
+        )
+        if entry is None:
+            raise LookupError(f"version {version} of review '{review}'")
         doc = cloud.find_by_id(c, entry["doc_id"])
         blocks, layout, source = entry["blocks"], entry.get("layout"), entry.get("source_text")
     else:
@@ -228,6 +238,7 @@ async def remarkable_clarify(
     options: Optional[List[str]] = None,
     review: Optional[str] = None,
     document: Optional[str] = None,
+    version: Optional[int] = None,
     folder: str = DEFAULT_FORMS_FOLDER,
 ) -> str:
     """
@@ -246,6 +257,7 @@ async def remarkable_clarify(
     - question: What you need to know.
     - options: Answer choices (default ["Yes", "No"]).
     - review / document: Where the mark is.
+    - version: Review version the request id came from (default: latest).
     - folder: Tablet folder (default "/Agent/Forms").
     </parameters>
     <examples>
@@ -258,7 +270,7 @@ async def remarkable_clarify(
             "invalid_arguments", "Pass review= or document=.", "Name where the mark is."
         )
     try:
-        png, target = await asyncio.to_thread(_mark_crop, review, document, request_id)
+        png, target = await asyncio.to_thread(_mark_crop, review, document, request_id, version)
     except KeyError:
         return make_error(
             "request_not_found",

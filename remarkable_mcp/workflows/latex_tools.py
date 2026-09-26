@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import uuid
 from pathlib import Path
@@ -17,6 +18,7 @@ from remarkable_mcp.workflows.latex_review import (
     collect_tex_requests,
     synctex_available,
     synctex_file,
+    synctex_inputs,
 )
 from remarkable_mcp.workflows.state import Store, now_iso, slugify, state_root
 
@@ -85,6 +87,18 @@ async def remarkable_latex_review_send(
     snap.mkdir(parents=True, exist_ok=True)
     shutil.copy2(pdf, snap / pdf.name)
     shutil.copy2(sync, snap / sync.name)
+    # Snapshot the .tex/.bib sources of this compilation too, so "line" and
+    # "source" refer to the text that was actually printed, even after edits.
+    sources = {}
+    for path in synctex_inputs(sync):
+        p = Path(path)
+        if p.suffix in (".tex", ".bib", ".sty", ".cls", ".bbl") and p.is_file():
+            try:
+                if p.stat().st_size <= 2_000_000:
+                    sources[path] = p.read_text(errors="replace")
+            except OSError:
+                continue
+    (snap / "sources.json").write_text(json.dumps(sources))
     name = title or pdf.stem
 
     try:
@@ -112,7 +126,7 @@ async def remarkable_latex_review_send(
 
 
 async def remarkable_latex_review_collect(
-    review: str, only_new: bool = True, include_images: bool = False
+    review: str, only_new: bool = True, include_images: bool = False, mark_seen: bool = True
 ):
     """
     <usecase>Turn pen marks on a LaTeX review into edits at .tex file:line.</usecase>
@@ -120,12 +134,16 @@ async def remarkable_latex_review_collect(
     Every mark comes back with its kind/intent (delete, replace, change,
     comment, attention), the marked text, the handwritten note, and the
     source location resolved via SyncTeX: "file" (relative to the project
-    directory), "line" and the current "source" text of that line.
+    directory when inside it, else absolute), "line", and "source" - the text
+    of that line *as it was compiled* (snapshotted at send time). Check that
+    the line still reads the same before editing a file you changed since.
     </instructions>
     <parameters>
     - review: Id from remarkable_latex_review_send.
     - only_new: Only marks not returned before (default true).
     - include_images: Attach crops of handwritten notes.
+    - mark_seen: Remember returned marks (default true); false to peek again,
+      e.g. with include_images=true to read untranscribed notes.
     </parameters>
     """
     store = _store()
@@ -143,7 +161,9 @@ async def remarkable_latex_review_collect(
         with cloud.MUPDF_LOCK:
             ink = load_document_ink_from_zip(zip_bytes)
         pages = {p.pdf_page + 1: p for p in ink.pages if p.pdf_page is not None}
-        reqs = collect_tex_requests(Path(rec["snapshot_pdf"]), pages)
+        snap_sources = Path(rec["snapshot_pdf"]).parent / "sources.json"
+        sources = json.loads(snap_sources.read_text()) if snap_sources.exists() else None
+        reqs = collect_tex_requests(Path(rec["snapshot_pdf"]), pages, sources)
         seen = set(rec.get("seen_strokes", []))
         if only_new:
             reqs = [r for r in reqs if not set(r.mark.seen_keys) <= seen]
@@ -192,11 +212,12 @@ async def remarkable_latex_review_collect(
     def merge(cur):
         if cur is None:
             return None
-        seen = set(cur.get("seen_strokes", []))
-        for r in reqs:
-            seen.update(r.mark.seen_keys)
-        cur["seen_strokes"] = sorted(seen)
-        cur["last_read"] = {"at": now_iso(), "ink": cloud.ink_token(doc)}
+        if mark_seen:
+            seen = set(cur.get("seen_strokes", []))
+            for r in reqs:
+                seen.update(r.mark.seen_keys)
+            cur["seen_strokes"] = sorted(seen)
+            cur["last_read"] = {"at": now_iso(), "ink": cloud.ink_token(doc)}
         return cur
 
     store.update(review, merge)
