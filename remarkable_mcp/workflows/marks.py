@@ -196,7 +196,14 @@ def stroke_features(s: Stroke) -> _Features:
     diag = math.hypot(w, h) or 1e-6
     cx0, cx1 = x0 + 0.25 * w, x1 - 0.25 * w
     cy0, cy1 = y0 + 0.25 * h, y1 - 0.25 * h
-    inner = sum(1 for x, y in s.points if cx0 <= x <= cx1 and cy0 <= y <= cy1) / len(s.points)
+    # Share of *path length* (not of sample points) in the central half of the
+    # box: independent of how densely the pen sampled the stroke.
+    inside = 0.0
+    for (ax, ay), (bx, by) in zip(s.points, s.points[1:]):
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        if cx0 <= mx <= cx1 and cy0 <= my <= cy1:
+            inside += math.hypot(bx - ax, by - ay)
+    inner = inside / length if len(s.points) > 1 else 0.0
     return _Features(
         w=w,
         h=h,
