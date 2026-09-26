@@ -217,3 +217,106 @@ def test_form_with_only_checkboxes_is_answered_once_touched(cloud):  # noqa: F81
     got = _json_of(asyncio.run(form_tools.remarkable_form_read(sent["form"])))
     assert got["answered"] is True
     assert got["values"] == {"a": True, "b": False}
+
+
+def test_image_field_embeds_png_but_not_into_manifest(tmp_path):
+    from remarkable_mcp.workflows.handwriting import render_strokes_png
+    from remarkable_mcp.workflows.ink import Stroke
+
+    png = render_strokes_png([Stroke(0, [(0, 0), (40, 20), (80, 0)], "fineliner", "black", 1)])
+    path = tmp_path / "crop.png"
+    path.write_bytes(png)
+    r = render_form(
+        "Img",
+        [
+            {"type": "image", "label": "your mark", "path": str(path)},
+            {"id": "a", "type": "choice", "label": "OK?", "options": ["Yes", "No"]},
+        ],
+    )
+    with pymupdf.open(stream=r.pdf, filetype="pdf") as doc:
+        assert doc[0].get_images()
+    assert all("png" not in f for f in r.manifest()["fields"])
+    json.dumps(r.manifest())  # serialisable
+    with pytest.raises(FormSpecError):
+        render_form(
+            "Img",
+            [
+                {"type": "image", "label": "x", "path": str(tmp_path / "nope.png")},
+                {"id": "a", "type": "checkbox", "label": "a"},
+            ],
+        )
+
+
+def test_triage_rows_read_like_choices():
+    from remarkable_mcp.workflows.forms import nearest_field, render_triage
+
+    items = [{"id": f"MYS-{i}", "title": f"Issue {i}", "subtitle": "bug"} for i in range(1, 4)]
+    r = render_triage("Triage", items, ["Now", "Later", "Drop"])
+    later2 = next(a for a in r.areas if a.field_id == "MYS-2" and a.option == "Later").rect
+    drop3 = next(a for a in r.areas if a.field_id == "MYS-3" and a.option == "Drop").rect
+    answers, pages = _read(r, [_tick(later2), *_cross(drop3)])
+    assert answers["MYS-1"].value is None
+    assert answers["MYS-2"].value == "Later"
+    assert answers["MYS-3"].value == "Drop"
+    assert nearest_field(r.manifest(), 1, (60, later2[1], 90, later2[3])) == "MYS-2"
+    with pytest.raises(FormSpecError):
+        render_triage("x", items, ["only"])
+
+
+def test_triage_paginates_many_rows():
+    from remarkable_mcp.workflows.forms import render_triage
+
+    items = [{"id": f"i{i}", "title": f"Item {i}", "subtitle": "detail line"} for i in range(40)]
+    r = render_triage("Many", items, ["A", "B"])
+    assert r.page_count >= 3
+    assert len({a.field_id for a in r.areas}) == 40
+
+
+def test_triage_tool_round_trip(cloud):  # noqa: F811
+    from remarkable_mcp.workflows import form_tools
+
+    sent = _json_of(
+        asyncio.run(
+            form_tools.remarkable_triage_send(
+                "PRs",
+                [{"id": "pr-1", "title": "Fix sync"}, {"id": "pr-2", "title": "Bump deps"}],
+                ["Merge", "Wait"],
+            )
+        )
+    )
+    record = form_tools._forms().get(sent["form"])
+    merge1 = next(
+        a for a in record["manifest"]["areas"] if a["field"] == "pr-1" and a["option"] == "Merge"
+    )
+    cloud.annotate(record["doc_id"], {0: [(_tick(tuple(merge1["rect"])), FINELINER, 446.0)]})
+    got = _json_of(asyncio.run(form_tools.remarkable_form_read(sent["form"])))
+    assert got["values"] == {"pr-1": "Merge", "pr-2": None}
+
+
+def test_clarify_embeds_the_mark(cloud):  # noqa: F811
+    from remarkable_mcp.workflows import form_tools, tools
+    from test_workflows import DRAFT, _page_w, _phrase_rects, _strike
+
+    asyncio.run(tools.remarkable_review_send(markdown=DRAFT))
+    doc = next(d for d in cloud.docs.values() if d.VissibleName.endswith("· v1"))
+    pdf = cloud.zips[doc.id]
+    pno, rects = _phrase_rects(pdf, "permission to fetch data")
+    cloud.annotate(doc.id, {pno: [(_strike(rects), FINELINER, _page_w(pdf))]})
+    [req] = _json_of(asyncio.run(tools.remarkable_review_collect("testing-pen-review")))["requests"]
+    sent = _json_of(
+        asyncio.run(
+            form_tools.remarkable_clarify(
+                req["id"], "Delete or reword?", ["Delete", "Reword"], review="testing-pen-review"
+            )
+        )
+    )
+    record = form_tools._forms().get(sent["form"])
+    kinds = [f["type"] for f in record["manifest"]["fields"]]
+    assert kinds == ["image", "choice", "text"]
+    q = next(d for d in cloud.docs.values() if d.VissibleName.startswith("Clarify"))
+    with pymupdf.open(stream=cloud.zips[q.id], filetype="pdf") as d:
+        assert d[0].get_images()
+    err = _json_of(
+        asyncio.run(form_tools.remarkable_clarify("mnope", "?", review="testing-pen-review"))
+    )
+    assert err["_error"]["type"] == "request_not_found"

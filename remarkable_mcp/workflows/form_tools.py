@@ -13,8 +13,10 @@ from remarkable_mcp.responses import make_error, make_response
 from remarkable_mcp.workflows import cloud, handwriting
 from remarkable_mcp.workflows.forms import (
     FormSpecError,
+    nearest_field,
     read_answers,
     render_form,
+    render_triage,
     stray_strokes,
 )
 from remarkable_mcp.workflows.ink import load_document_ink_from_zip
@@ -50,10 +52,10 @@ def _forms() -> Store:
     return Store("forms")
 
 
-def _send(title: str, fields: list, intro: str, folder: str, kind: str) -> str:
+def _send(title: str, fields: list, intro: str, folder: str, kind: str, renderer=None) -> str:
     try:
         with cloud.MUPDF_LOCK:
-            rendered = render_form(title, fields, intro=intro)
+            rendered = (renderer or (lambda: render_form(title, fields, intro=intro)))()
     except FormSpecError as exc:
         return make_error("invalid_form", str(exc), "Fix the field list and try again.")
     if not cloud.is_cloud():
@@ -180,6 +182,150 @@ async def remarkable_ask(
         return make_error("send_failed", str(exc), "Check remarkable_status().")
 
 
+def _mark_crop(review: Optional[str], document: Optional[str], request_id: str):
+    """(png of the mark with its page underneath, target text) for a request id."""
+    from remarkable_mcp.api import get_items_by_id
+    from remarkable_mcp.workflows.review import collect_requests
+    from remarkable_mcp.workflows.state import Store as _Store
+
+    c = cloud.client()
+    blocks = layout = source = None
+    if review:
+        rec = _Store("reviews").get(slugify(review))
+        if rec is None:
+            raise LookupError(f"review '{review}'")
+        entry = rec["versions"][-1]
+        doc = cloud.find_by_id(c, entry["doc_id"])
+        blocks, layout, source = entry["blocks"], entry.get("layout"), entry.get("source_text")
+    else:
+        from remarkable_mcp.tools import _find_target_document
+
+        items = c.get_meta_items()
+        doc = _find_target_document(items, get_items_by_id(items), document)
+    if doc is None:
+        raise LookupError(review or document)
+    zip_bytes = cloud.download_zip(c, doc)
+    with cloud.MUPDF_LOCK:
+        ink = load_document_ink_from_zip(zip_bytes)
+        reqs = collect_requests(ink, blocks, source, None, layout)
+        req = next((r for r in reqs if r.mark.id == request_id), None)
+        if req is None:
+            raise KeyError(request_id)
+        page = next(p for p in ink.pages if p.page == req.page)
+        mark = req.mark
+        strokes = list(mark.strokes) + (list(mark.note.strokes) if mark.note else [])
+        rect = mark.rect if mark.note is None else _union([mark.rect, mark.note.rect])
+        pad_rect = (rect[0] - 30, rect[1] - 14, rect[2] + 30, rect[3] + 14)
+        png = handwriting.render_page_region_png(
+            ink.pdf_bytes, page.pdf_page, strokes, pad_rect, scale=2.5
+        )
+    return png, mark.target_text
+
+
+async def remarkable_clarify(
+    request_id: str,
+    question: str,
+    options: Optional[List[str]] = None,
+    review: Optional[str] = None,
+    document: Optional[str] = None,
+    folder: str = DEFAULT_FORMS_FOLDER,
+) -> str:
+    """
+    <usecase>Ask the user what an unclear pen mark means, showing them their own mark.</usecase>
+    <instructions>
+    When a change request is ambiguous (an unreadable note, a strike that
+    might mean "move" rather than "delete"), don't guess: this puts a page on
+    the tablet with a crop of the mark and the printed text under it, your
+    question and options as tick boxes, and room for a comment. Read the
+    answer with remarkable_form_read(form).
+    Pass `review` for review requests (ids from remarkable_review_collect) or
+    `document` for marks from remarkable_annotations.
+    </instructions>
+    <parameters>
+    - request_id: The mark/request id (e.g. "m1a2b3c4").
+    - question: What you need to know.
+    - options: Answer choices (default ["Yes", "No"]).
+    - review / document: Where the mark is.
+    - folder: Tablet folder (default "/Agent/Forms").
+    </parameters>
+    <examples>
+    - remarkable_clarify("m77d01e3c", "Delete this sentence, or move it to the intro?",
+        ["Delete", "Move to intro", "Keep"], review="duckdb-post")
+    </examples>
+    """
+    if not (review or document):
+        return make_error(
+            "invalid_arguments", "Pass review= or document=.", "Name where the mark is."
+        )
+    try:
+        png, target = await asyncio.to_thread(_mark_crop, review, document, request_id)
+    except KeyError:
+        return make_error(
+            "request_not_found",
+            f"No mark '{request_id}' on the current version.",
+            "Use an id from remarkable_review_collect / remarkable_annotations.",
+        )
+    except LookupError as exc:
+        return make_error("not_found", f"Not found: {exc}", "Check the review id or document name.")
+    except Exception as exc:
+        return make_error("clarify_failed", str(exc), "Check remarkable_status().")
+    fields = [
+        {"type": "image", "label": f"Your mark{': ' + target[:80] if target else ''}", "png": png},
+        {"id": "answer", "type": "choice", "label": question, "options": options or ["Yes", "No"]},
+        {"id": "comment", "type": "text", "label": "Anything else?", "lines": 2},
+    ]
+    title = f"Clarify: {question[:50]}"
+    try:
+        result = await asyncio.to_thread(_send, title, fields, "", folder, "ask")
+    except Exception as exc:
+        return make_error("send_failed", str(exc), "Check remarkable_status().")
+    return result
+
+
+async def remarkable_triage_send(
+    title: str,
+    items: List[dict],
+    options: Optional[List[str]] = None,
+    intro: str = "",
+    folder: str = DEFAULT_FORMS_FOLDER,
+) -> str:
+    """
+    <usecase>Put a triage sheet on the tablet: many items, one tick per row.</usecase>
+    <instructions>
+    For deciding many small things fast on paper - new Linear issues, open
+    PRs, emails, ideas. Each item is one row; the options are columns of tick
+    boxes on the right. Notes written beside a row come back as remarks
+    attached to that row ("near"). Read with remarkable_form_read(form):
+    values maps item id -> chosen option (null if skipped).
+    Then apply the decisions in the source system (e.g. Linear) yourself.
+    </instructions>
+    <parameters>
+    - title: Sheet title.
+    - items: [{"id": "MYS-123", "title": "...", "subtitle": "optional detail"}].
+    - options: 2-5 column labels (default ["Now", "Later", "Drop"]).
+    - intro: Optional instructions under the title.
+    - folder: Tablet folder (default "/Agent/Forms").
+    </parameters>
+    <examples>
+    - remarkable_triage_send("MYS triage", [{"id": "MYS-412", "title": "Score sync drops",
+        "subtitle": "bug · 3 reports"}], ["Now", "Next", "Later", "Close"])
+    </examples>
+    """
+    opts = options or ["Now", "Later", "Drop"]
+    try:
+        return await asyncio.to_thread(
+            _send,
+            title,
+            [],
+            intro,
+            folder,
+            "triage",
+            lambda: render_triage(title, items, opts, intro),
+        )
+    except Exception as exc:
+        return make_error("send_failed", str(exc), "Check remarkable_status().")
+
+
 def _read(record: dict, include_images: bool):
     c = cloud.client()
     cloud.refresh(c)
@@ -207,9 +353,12 @@ def _read(record: dict, include_images: bool):
         for g in _cluster([s.bbox for s in strokes], 12, 8):
             group = [strokes[i] for i in g]
             label = f"remark-p{pno}-{len(remarks) + 1}"
-            crops[label] = handwriting.render_strokes_png(group, _union([s.bbox for s in group]))
+            rect = _union([s.bbox for s in group])
+            crops[label] = handwriting.render_strokes_png(group, rect)
             ink_of[label] = group
-            remarks.append({"id": label, "page": pno, "text": None})
+            remarks.append(
+                {"id": label, "page": pno, "text": None, "near": nearest_field(manifest, pno, rect)}
+            )
     labels = list(crops)
     texts = dict(
         zip(
@@ -376,3 +525,5 @@ def register(mcp, write_enabled: bool) -> None:
     if write_enabled:
         mcp.tool(annotations=_SEND)(remarkable_form_send)
         mcp.tool(annotations=_SEND)(remarkable_ask)
+        mcp.tool(annotations=_SEND)(remarkable_clarify)
+        mcp.tool(annotations=_SEND)(remarkable_triage_send)

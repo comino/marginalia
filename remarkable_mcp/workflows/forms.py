@@ -30,8 +30,8 @@ from remarkable_mcp.workflows.ink import PageInk, Rect, Stroke
 from remarkable_mcp.workflows.marks import stroke_features
 from remarkable_mcp.workflows.review_pdf import PAGE_H, PAGE_W
 
-FIELD_TYPES = {"checkbox", "choice", "multi", "scale", "text", "heading", "info"}
-_ANSWER_TYPES = FIELD_TYPES - {"heading", "info"}
+FIELD_TYPES = {"checkbox", "choice", "multi", "scale", "text", "heading", "info", "image"}
+_ANSWER_TYPES = FIELD_TYPES - {"heading", "info", "image"}
 
 MARGIN_X = 40.0
 TOP = 44.0
@@ -64,7 +64,8 @@ class FormRender:
 
     def manifest(self) -> dict:
         return {
-            "fields": self.fields,
+            # Embedded image bytes stay out of the stored manifest.
+            "fields": [{k: v for k, v in f.items() if k != "png"} for f in self.fields],
             "areas": [
                 {"field": a.field_id, "option": a.option, "page": a.page, "rect": list(a.rect)}
                 for a in self.areas
@@ -96,6 +97,16 @@ def validate_fields(fields: Sequence[dict]) -> List[dict]:
                 raise FormSpecError(f"Duplicate field id '{fid}'.")
             seen.add(fid)
             f["id"] = fid
+        if ftype == "image":
+            if f.get("png") is None:
+                path = f.get("path")
+                if not path:
+                    raise FormSpecError(f"Field {n}: image fields need 'path'.")
+                try:
+                    with open(path, "rb") as fh:
+                        f["png"] = fh.read()
+                except OSError as exc:
+                    raise FormSpecError(f"Field {n}: cannot read image {path!r}: {exc}") from exc
         if ftype in ("choice", "multi"):
             opts = [str(o) for o in f.get("options") or []]
             if len(opts) < 2:
@@ -185,6 +196,22 @@ def _wrap(text: str, size: float, width: float, font: str) -> List[str]:
     return lines or [""]
 
 
+def _place_image(lay: "_Layout", png: bytes, caption: str, max_h: float = 190.0) -> None:
+    """Embed a PNG scaled into the column (e.g. a crop of the user's own mark)."""
+    pix = pymupdf.Pixmap(png)
+    w, h = pix.width, pix.height
+    scale = min(lay.width / w, max_h / h, 1.5)
+    dw, dh = w * scale, h * scale
+    lay.ensure(dh + 24)
+    rect = pymupdf.Rect(MARGIN_X, lay.y, MARGIN_X + dw, lay.y + dh)
+    lay.page.insert_image(rect, stream=png)
+    lay.page.draw_rect(rect, color=(0.6, 0.6, 0.6), width=0.5)
+    lay.y += dh + 4
+    if caption:
+        lay.text(caption, 7.5, color=_GREY)
+    lay.y += 10
+
+
 def _box(page, x: float, y: float, size: float = BOX) -> Rect:
     rect = (x, y, x + size, y + size)
     page.draw_rect(pymupdf.Rect(*rect), color=_BLACK, width=0.8)
@@ -221,6 +248,9 @@ def render_form(
         if t == "info":
             lay.text(f["label"], 9, color=(0.25, 0.25, 0.25))
             lay.y += 8
+            continue
+        if t == "image":
+            _place_image(lay, f["png"], f["label"], max_h=float(f.get("max_height", 190)))
             continue
         if t == "checkbox":
             lay.ensure(max(lay.measure(f["label"], 10.5, BOX + 8), BOX) + 10)
@@ -302,6 +332,110 @@ def render_form(
     pdf = doc.tobytes(garbage=3, deflate=True)
     doc.close()
     return FormRender(pdf=pdf, areas=areas, page_count=total, fields=fields)
+
+
+def render_triage(
+    title: str,
+    items: Sequence[dict],
+    options: Sequence[str],
+    intro: str = "",
+) -> FormRender:
+    """Compact rows: one item per row, the same option boxes in columns on the right.
+
+    ``items``: [{"id", "title", "subtitle"?}]. Each row becomes a ``choice``
+    field, so reading uses the normal form machinery.
+    """
+    options = [str(o) for o in options]
+    if len(options) < 2 or len(options) > 5:
+        raise FormSpecError("Triage needs 2-5 options.")
+    if not items:
+        raise FormSpecError("Triage needs at least one item.")
+    ids = [str(it.get("id") or f"r{n}") for n, it in enumerate(items, start=1)]
+    if len(set(ids)) != len(ids):
+        raise FormSpecError("Item ids must be unique.")
+
+    col_w = 44.0
+    cols_x0 = PAGE_W - MARGIN_X - col_w * len(options)
+    text_w = cols_x0 - MARGIN_X - 8
+    doc = pymupdf.open()
+    lay = _Layout(doc, title, datetime.now().strftime("%d %b %Y"))
+    lay.text(title, 15, bold=True)
+    if intro:
+        lay.y += 2
+        lay.text(intro, 9, color=(0.2, 0.2, 0.2))
+    lay.y += 8
+
+    def header():
+        for k, opt in enumerate(options):
+            label = opt[:10]
+            tw = pymupdf.get_text_length(label, fontname="hebo", fontsize=7)
+            cx = cols_x0 + col_w * k + col_w / 2
+            lay.page.insert_text((cx - tw / 2, lay.y + 8), label, fontsize=7, fontname="hebo")
+        lay.y += 14
+
+    header()
+    fields: List[dict] = []
+    areas: List[AnswerArea] = []
+    for item_id, it in zip(ids, items):
+        head = _wrap(str(it.get("title", item_id)), 9.5, text_w, "hebo")[:2]
+        sub = (
+            _wrap(str(it.get("subtitle", "")), 7.5, text_w, "helv")[:2]
+            if it.get("subtitle")
+            else []
+        )
+        row_h = max(len(head) * 12 + len(sub) * 9.5 + 10, BOX + 14)
+        if lay.y + row_h > BOTTOM:
+            lay.new_page()
+            header()
+        top = lay.y
+        yy = top + 10
+        for line in head:
+            lay.page.insert_text((MARGIN_X, yy), line, fontsize=9.5, fontname="hebo")
+            yy += 12
+        for line in sub:
+            lay.page.insert_text(
+                (MARGIN_X, yy - 2), line, fontsize=7.5, fontname="helv", color=_GREY
+            )
+            yy += 9.5
+        by = top + (row_h - BOX) / 2 - 2
+        for k, opt in enumerate(options):
+            bx = cols_x0 + col_w * k + (col_w - BOX) / 2
+            areas.append(AnswerArea(item_id, opt, lay.page_no, _box(lay.page, bx, by)))
+        lay.y = top + row_h
+        lay.page.draw_line(
+            (MARGIN_X, lay.y - 2), (PAGE_W - MARGIN_X, lay.y - 2), color=_RULE, width=0.4
+        )
+        fields.append(
+            {
+                "id": item_id,
+                "type": "choice",
+                "label": str(it.get("title", item_id)),
+                "options": options,
+            }
+        )
+
+    total = len(doc)
+    for i, page in enumerate(doc, start=1):
+        page.insert_text(
+            (PAGE_W - 40, PAGE_H - 14), f"{i}/{total}", fontsize=6.5, fontname="helv", color=_GREY
+        )
+    pdf = doc.tobytes(garbage=3, deflate=True)
+    doc.close()
+    return FormRender(pdf=pdf, areas=areas, page_count=total, fields=fields)
+
+
+def nearest_field(manifest: dict, page: int, rect: Rect) -> Optional[str]:
+    """The field whose answer areas sit closest (vertically) to ``rect`` on ``page``."""
+    cy = (rect[1] + rect[3]) / 2
+    best, dist = None, math.inf
+    for a in manifest["areas"]:
+        if a["page"] != page:
+            continue
+        r = a["rect"]
+        d = 0.0 if r[1] <= cy <= r[3] else min(abs(cy - r[1]), abs(cy - r[3]))
+        if d < dist:
+            best, dist = a["field"], d
+    return best if dist <= 30 else None
 
 
 # --------------------------------------------------------------------------- reading
