@@ -424,7 +424,7 @@ def _mode_prescreen(mode: str) -> tuple[bool, str]:
     """Cheap reachability check before spawning the server (avoids long hangs)."""
     spec = MODES[mode]
     if mode == "local":
-        from remarkable_mcp.local_dir import check_local_dir_available
+        from remarkable_mcp.transports.local_dir import check_local_dir_available
 
         base_dir = os.environ.get("REMARKABLE_LOCAL_DIR")
         if check_local_dir_available(base_dir):

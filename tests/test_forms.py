@@ -6,8 +6,13 @@ import json
 import pymupdf
 import pytest
 
-from remarkable_mcp.workflows.forms import FormSpecError, read_answers, render_form, stray_strokes
-from remarkable_mcp.workflows.ink import load_document_ink_from_zip
+from remarkable_mcp.workflows.forms.forms import (
+    FormSpecError,
+    read_answers,
+    render_form,
+    stray_strokes,
+)
+from remarkable_mcp.workflows.ink.page import load_document_ink_from_zip
 from test_workflows import (  # noqa: F401  (fixtures)
     FINELINER,
     FakeCloud,
@@ -137,7 +142,7 @@ def test_long_forms_paginate():
 
 
 def test_ask_round_trip(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import form_tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
 
     sent = _json_of(asyncio.run(form_tools.remarkable_ask("Publish on Tuesday?")))
     form_id = sent["form"]
@@ -161,7 +166,7 @@ def test_ask_round_trip(cloud):  # noqa: F811
 
 
 def test_form_send_rejects_bad_spec(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import form_tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
 
     err = json.loads(
         asyncio.run(form_tools.remarkable_form_send("Bad", [{"type": "nope", "label": "x"}]))
@@ -197,7 +202,7 @@ def test_long_labels_stay_with_their_boxes():
 
 
 def test_form_with_only_checkboxes_is_answered_once_touched(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import form_tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
 
     sent = _json_of(
         asyncio.run(
@@ -220,8 +225,8 @@ def test_form_with_only_checkboxes_is_answered_once_touched(cloud):  # noqa: F81
 
 
 def test_image_field_embeds_png_but_not_into_manifest(tmp_path):
-    from remarkable_mcp.workflows.handwriting import render_strokes_png
-    from remarkable_mcp.workflows.ink import Stroke
+    from remarkable_mcp.workflows.ink.handwriting import render_strokes_png
+    from remarkable_mcp.workflows.ink.page import Stroke
 
     png = render_strokes_png([Stroke(0, [(0, 0), (40, 20), (80, 0)], "fineliner", "black", 1)])
     path = tmp_path / "crop.png"
@@ -248,7 +253,7 @@ def test_image_field_embeds_png_but_not_into_manifest(tmp_path):
 
 
 def test_triage_rows_read_like_choices():
-    from remarkable_mcp.workflows.forms import nearest_field, render_triage
+    from remarkable_mcp.workflows.forms.forms import nearest_field, render_triage
 
     items = [{"id": f"MYS-{i}", "title": f"Issue {i}", "subtitle": "bug"} for i in range(1, 4)]
     r = render_triage("Triage", items, ["Now", "Later", "Drop"])
@@ -264,7 +269,7 @@ def test_triage_rows_read_like_choices():
 
 
 def test_triage_paginates_many_rows():
-    from remarkable_mcp.workflows.forms import render_triage
+    from remarkable_mcp.workflows.forms.forms import render_triage
 
     items = [{"id": f"i{i}", "title": f"Item {i}", "subtitle": "detail line"} for i in range(40)]
     r = render_triage("Many", items, ["A", "B"])
@@ -273,7 +278,7 @@ def test_triage_paginates_many_rows():
 
 
 def test_triage_tool_round_trip(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import form_tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
 
     sent = _json_of(
         asyncio.run(
@@ -294,7 +299,8 @@ def test_triage_tool_round_trip(cloud):  # noqa: F811
 
 
 def test_clarify_embeds_the_mark(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import form_tools, tools
+    from remarkable_mcp.workflows import tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
     from test_workflows import DRAFT, _page_w, _phrase_rects, _strike
 
     asyncio.run(tools.remarkable_review_send(markdown=DRAFT))

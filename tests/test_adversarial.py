@@ -11,12 +11,12 @@ from dataclasses import replace
 
 import pytest
 
-from remarkable_mcp.workflows.forms import read_answers, render_form
-from remarkable_mcp.workflows.inbox import segment_entries
-from remarkable_mcp.workflows.ink import PageInk, Stroke, load_document_ink_from_zip
-from remarkable_mcp.workflows.marks import analyze_page
-from remarkable_mcp.workflows.review_pdf import render_review_pdf
-from remarkable_mcp.workflows.sketch import classify_outline, recognise
+from remarkable_mcp.workflows.forms.forms import read_answers, render_form
+from remarkable_mcp.workflows.inbox.inbox import segment_entries
+from remarkable_mcp.workflows.ink.marks import analyze_page
+from remarkable_mcp.workflows.ink.page import PageInk, Stroke, load_document_ink_from_zip
+from remarkable_mcp.workflows.review.render import render_review_pdf
+from remarkable_mcp.workflows.structure.sketch import classify_outline, recognise
 from test_workflows import DRAFT, _doc_zip, _phrase_rects
 
 RNG = random.Random(7)
@@ -220,7 +220,7 @@ def test_circle_drawn_as_two_arcs(page, start):
 # 10: margin bars
 def test_bar_in_the_gutter_targets_text_not_numbers():
     words_line = []
-    from remarkable_mcp.workflows.ink import Word
+    from remarkable_mcp.workflows.ink.page import Word
 
     y = 100.0
     words_line.append(Word("2", (40, y, 46, y + 14), 0, 0))
@@ -359,7 +359,7 @@ def _inbox_entries(strokes):
 
 
 def _rule(k):
-    from remarkable_mcp.workflows.inbox import LINE_PITCH, TEMPLATE_TOP
+    from remarkable_mcp.workflows.inbox.inbox import LINE_PITCH, TEMPLATE_TOP
 
     return TEMPLATE_TOP + LINE_PITCH * (k + 1)
 

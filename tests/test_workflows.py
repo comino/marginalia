@@ -17,11 +17,12 @@ from types import SimpleNamespace
 import pymupdf
 import pytest
 
-from remarkable_mcp.workflows import handwriting, review_pdf
-from remarkable_mcp.workflows.ink import load_document_ink_from_zip
-from remarkable_mcp.workflows.marks import analyze_page
-from remarkable_mcp.workflows.review import collect_requests, find_source_line
-from remarkable_mcp.workflows.review_pdf import assign_words_to_blocks, render_review_pdf
+from remarkable_mcp.workflows.ink import handwriting
+from remarkable_mcp.workflows.ink.marks import analyze_page
+from remarkable_mcp.workflows.ink.page import load_document_ink_from_zip
+from remarkable_mcp.workflows.review import render as review_pdf
+from remarkable_mcp.workflows.review.markdown import collect_requests, find_source_line
+from remarkable_mcp.workflows.review.render import assign_words_to_blocks, render_review_pdf
 from remarkable_mcp.workflows.state import Store, slugify
 
 PPU = 0.3177  # points per device unit for the 1404x1872 grid
@@ -418,7 +419,7 @@ def test_find_source_line():
 def test_handwriting_crop_and_disabled_backend(monkeypatch, tmp_path):
     monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
     monkeypatch.setenv("REMARKABLE_HANDWRITING_BACKEND", "none")
-    from remarkable_mcp.workflows.ink import Stroke
+    from remarkable_mcp.workflows.ink.page import Stroke
 
     strokes = [
         Stroke(index=i, points=pts, tool="fineliner", color="black", width=1)
@@ -662,7 +663,7 @@ def test_annotations_tool_on_any_document(cloud, monkeypatch):
     pno, rects = _phrase_rects(r.pdf, "permission to fetch data")
     cloud.annotate(doc.id, {pno: [(_strike(rects), FINELINER, _page_w(r.pdf))]})
     monkeypatch.setattr(
-        "remarkable_mcp.tools._find_target_document",
+        "remarkable_mcp.core.tools._find_target_document",
         lambda collection, by_id, name: next(
             (d for d in collection if d.VissibleName == name), None
         ),

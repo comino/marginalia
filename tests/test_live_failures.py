@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from remarkable_mcp.workflows import live
-from remarkable_mcp.workflows.live import DocState
+from remarkable_mcp.workflows.live import watcher as live
+from remarkable_mcp.workflows.live.watcher import DocState
 
 SYNC = json.dumps({"message": {"attributes": {"event": "SyncComplete", "sourceDeviceID": "t"}}})
 _real_sleep = asyncio.sleep
@@ -220,7 +220,7 @@ def test_immediately_closed_sockets_back_off():
 
 
 def test_new_documents_report_page_ids():
-    from remarkable_mcp.workflows.live import diff
+    from remarkable_mcp.workflows.live.watcher import diff
 
     new = {"d": DocState("N", "/N", "", {"d/pg1.rm": "1", "d/pg2.rm": "2"}, False)}
     [ch] = diff({}, new)

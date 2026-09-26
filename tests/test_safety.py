@@ -143,7 +143,10 @@ def test_download_size_is_capped(monkeypatch):
 
 
 def test_tools_refuse_unsafe_inputs(cloud, home, monkeypatch):  # noqa: F811
-    from remarkable_mcp.workflows import form_tools, latex_tools, reading_tools, tools
+    from remarkable_mcp.workflows import tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
+    from remarkable_mcp.workflows.reading import tools as reading_tools
+    from remarkable_mcp.workflows.review import latex_tools
 
     err = _json_of(
         asyncio.run(tools.remarkable_review_send(source_path=str(home / ".ssh" / "notes.md")))

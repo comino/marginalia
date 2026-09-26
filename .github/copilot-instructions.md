@@ -108,16 +108,13 @@ uv run ruff format .
 ```
 remarkable-mcp/
 ├── remarkable_mcp/
-│   ├── server.py          # MCPServer and transports
-│   ├── tools.py           # Read and render tools
-│   ├── write_tools.py     # Write and authoring tools
-│   ├── api.py             # Transport selection
-│   ├── sync.py            # Cloud client
-│   ├── ssh.py             # SSH client
-│   ├── usb_web.py         # USB web client
-│   ├── local_dir.py       # Desktop cache client
-│   ├── extract.py         # Extraction and rendering
-│   └── app_canvas.py      # MCP Apps canvas
+│   ├── server.py           # assembles the MCP server; cli.py is the entry point
+│   ├── core/               # core tools: read/render, write/manage, canvas, resources, prompts
+│   ├── transports/         # cloud sync, SSH, USB web, local desktop cache (api.py selects)
+│   ├── documents/          # text/stroke extraction, .rm composition, exports, Markdown to PDF
+│   ├── workflows/          # ink interpretation: ink/, review/, forms/, inbox/, structure/,
+│   │                       #   reading/, live/ (incl. the autopilot), overview, state, safety
+│   └── trmnl/              # TRMNL e-ink display tools (independent of the reMarkable side)
 ├── tests/                 # pytest suite (conftest.py isolates all state)
 │   ├── test_server.py
 │   ├── test_mcp_v2.py     # Modern/legacy protocol compatibility
@@ -210,7 +207,7 @@ async def test_something():
     assert "expected_key" in data
 
 # Mocking the API client
-@patch('remarkable_mcp.tools.get_rmapi')
+@patch('remarkable_mcp.core.tools.get_rmapi')
 async def test_with_mock(mock_get_rmapi):
     mock_client = Mock()
     mock_get_rmapi.return_value = mock_client
@@ -221,7 +218,7 @@ async def test_with_mock(mock_get_rmapi):
 
 ### Adding a New Tool
 
-1. Add the tool function in `remarkable_mcp/tools.py` with proper docstring and annotations
+1. Add the tool function in `remarkable_mcp/core/tools.py` with proper docstring and annotations
 2. Add tests in `tests/test_server.py`
 3. Update README.md tools table
 4. Update README.md examples if relevant

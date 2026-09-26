@@ -3,8 +3,8 @@
 import asyncio
 import json
 
-from remarkable_mcp.workflows import live
-from remarkable_mcp.workflows.live import DocState, diff
+from remarkable_mcp.workflows.live import watcher as live
+from remarkable_mcp.workflows.live.watcher import DocState, diff
 
 
 def _doc(name, pages, parent="", trashed=False):
@@ -137,7 +137,7 @@ def _patch(monkeypatch, watcher, arrivals=()):
 
 
 def test_live_watch_tool_times_out_cleanly(monkeypatch):
-    from remarkable_mcp.workflows import live_tools
+    from remarkable_mcp.workflows.live import tools as live_tools
 
     _patch(monkeypatch, FakeWatcher())
     out = json.loads(asyncio.run(live_tools.remarkable_live_watch(timeout=5)))
@@ -145,7 +145,7 @@ def test_live_watch_tool_times_out_cleanly(monkeypatch):
 
 
 def test_live_watch_tool_batches_and_filters(monkeypatch):
-    from remarkable_mcp.workflows import live_tools
+    from remarkable_mcp.workflows.live import tools as live_tools
 
     w = FakeWatcher(
         [
@@ -168,7 +168,7 @@ def test_live_watch_tool_batches_and_filters(monkeypatch):
 
 
 def test_live_watch_resumes_from_cursor(monkeypatch):
-    from remarkable_mcp.workflows import live_tools
+    from remarkable_mcp.workflows.live import tools as live_tools
 
     w = FakeWatcher([live.Change("a", "Sketch", "/Sketch", "ink", ["p1"])])
     w.seq = 1  # happened while the agent was busy with the previous answer
@@ -186,7 +186,7 @@ def test_live_watch_resumes_from_cursor(monkeypatch):
 def test_live_watch_settle_is_bounded_by_timeout(monkeypatch):
     import time as _time
 
-    from remarkable_mcp.workflows import live_tools
+    from remarkable_mcp.workflows.live import tools as live_tools
 
     changes = [live.Change("a", "S", "/S", "ink", [f"p{i}"]) for i in range(200)]
     w = FakeWatcher(changes)
@@ -200,7 +200,7 @@ def test_live_watch_settle_is_bounded_by_timeout(monkeypatch):
 
 
 def test_live_watch_cursor_from_before_a_restart(monkeypatch):
-    from remarkable_mcp.workflows import live_tools
+    from remarkable_mcp.workflows.live import tools as live_tools
 
     w = FakeWatcher([live.Change("a", "Sketch", "/Sketch", "ink", ["p1"])])
     w.seq = 1  # restarted server: seq starts again from 0 and is now at 1

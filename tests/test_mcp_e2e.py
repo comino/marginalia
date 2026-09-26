@@ -85,18 +85,16 @@ def test_every_workflow_tool_is_documented():
 
 def test_every_tool_has_usecase_and_described_parameters():
     """Workflow tools document every parameter, so small models know what to pass."""
-    from remarkable_mcp.workflows import (
-        code_review_tools,
-        form_tools,
-        inbox_tools,
-        latex_tools,
-        live_tools,
-        overview_tools,
-        reading_tools,
-        sketch_tools,
-        structure_tools,
-        tools,
-    )
+    from remarkable_mcp.workflows import overview as overview_tools
+    from remarkable_mcp.workflows import tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
+    from remarkable_mcp.workflows.inbox import tools as inbox_tools
+    from remarkable_mcp.workflows.live import tools as live_tools
+    from remarkable_mcp.workflows.reading import tools as reading_tools
+    from remarkable_mcp.workflows.review import code_tools as code_review_tools
+    from remarkable_mcp.workflows.review import latex_tools
+    from remarkable_mcp.workflows.structure import sketch_tools
+    from remarkable_mcp.workflows.structure import tools as structure_tools
 
     modules = [
         code_review_tools,
@@ -131,7 +129,7 @@ def test_every_tool_has_usecase_and_described_parameters():
 
 def test_ask_and_read_through_mcp(cloud):  # noqa: F811
     sent, _ = _call("remarkable_ask", {"question": "Ship it?", "options": ["Yes", "No", "Later"]})
-    from remarkable_mcp.workflows import form_tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
 
     record = form_tools._forms().get(sent["form"])
     later = next(a for a in record["manifest"]["areas"] if a["option"] == "Later")

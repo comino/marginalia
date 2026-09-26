@@ -12,7 +12,7 @@ from mcp.types import (
     ElicitResult,
 )
 
-from remarkable_mcp.app_canvas import CANVAS_RESOURCE_URI
+from remarkable_mcp.core.app_canvas import CANVAS_RESOURCE_URI
 from remarkable_mcp.server import mcp
 
 
@@ -29,9 +29,9 @@ def _document(name: str = "Test Document") -> Mock:
 
 def _without_background_loader():
     return (
-        patch("remarkable_mcp.resources.start_background_loader", return_value=None),
+        patch("remarkable_mcp.core.resources.start_background_loader", return_value=None),
         patch(
-            "remarkable_mcp.resources.stop_background_loader",
+            "remarkable_mcp.core.resources.stop_background_loader",
             new_callable=AsyncMock,
         ),
     )
@@ -47,7 +47,7 @@ async def test_one_server_serves_modern_and_legacy_catalogs():
     with (
         loader_start,
         loader_stop,
-        patch("remarkable_mcp.tools.get_rmapi", return_value=api_client),
+        patch("remarkable_mcp.core.tools.get_rmapi", return_value=api_client),
     ):
         async with (
             Client(mcp) as modern,
@@ -133,7 +133,7 @@ async def test_export_resource_link_works_in_both_protocol_eras(mode, expected_v
     import fitz
     from mcp import types
 
-    from remarkable_mcp.export_resources import export_store
+    from remarkable_mcp.core.export_resources import export_store
 
     document = _document("Protocol Export")
     api_client = Mock()
@@ -148,8 +148,8 @@ async def test_export_resource_link_works_in_both_protocol_eras(mode, expected_v
     with (
         loader_start,
         loader_stop,
-        patch("remarkable_mcp.tools.get_rmapi", return_value=api_client),
-        patch("remarkable_mcp.tools.get_file_type", return_value="pdf"),
+        patch("remarkable_mcp.core.tools.get_rmapi", return_value=api_client),
+        patch("remarkable_mcp.core.tools.get_file_type", return_value="pdf"),
     ):
         async with Client(mcp, mode=mode) as client:
             assert client.protocol_version == expected_version
@@ -209,7 +209,7 @@ async def test_delete_confirmation_works_in_both_protocol_eras(
     with (
         loader_start,
         loader_stop,
-        patch("remarkable_mcp.write_tools.get_rmapi", return_value=api_client),
+        patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=api_client),
     ):
         async with Client(mcp, mode=mode, elicitation_callback=confirm) as client:
             result = await client.call_tool(

@@ -2,8 +2,8 @@
 
 import math
 
-from remarkable_mcp.workflows.ink import Stroke
-from remarkable_mcp.workflows.sketch import (
+from remarkable_mcp.workflows.ink.page import Stroke
+from remarkable_mcp.workflows.structure.sketch import (
     classify_outline,
     rdp,
     recognise,
@@ -161,7 +161,7 @@ def test_sketch_and_regions_tools(cloud, monkeypatch):  # noqa: F811
 
     import pymupdf
 
-    from remarkable_mcp.workflows import sketch_tools
+    from remarkable_mcp.workflows.structure import sketch_tools
     from test_workflows import FINELINER, _json_of
 
     doc = pymupdf.open()
@@ -172,7 +172,7 @@ def test_sketch_and_regions_tools(cloud, monkeypatch):  # noqa: F811
     uploaded = cloud.upload_document(pdf, "Whiteboard", "pdf")
     cloud.annotate(uploaded.id, {0: [(p, FINELINER, 446.0) for p in diagram + notes]})
     monkeypatch.setattr(
-        "remarkable_mcp.tools._find_target_document",
+        "remarkable_mcp.core.tools._find_target_document",
         lambda items, by_id, name: next((d for d in items if d.VissibleName == name), None),
     )
 

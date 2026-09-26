@@ -1,0 +1,2544 @@
+"""
+MCP Tools for reMarkable tablet access.
+
+Tools in this module never modify the reMarkable library. Most are read-only
+and idempotent; ``remarkable_export`` additionally creates a bounded temporary
+file on the MCP server host and returns it as a resource link.
+"""
+
+import base64
+import logging
+import os
+import re
+import tempfile
+from dataclasses import dataclass, replace
+from datetime import datetime
+from pathlib import Path
+from typing import List, Literal, Optional
+
+from mcp.types import (
+    BlobResourceContents,
+    EmbeddedResource,
+    ResourceLink,
+    TextContent,
+    TextResourceContents,
+    ToolAnnotations,
+)
+
+from remarkable_mcp.core.concurrency import run_blocking
+from remarkable_mcp.core.export_resources import PublishedExport, export_store
+from remarkable_mcp.core.responses import make_error, make_response
+from remarkable_mcp.documents.exporters import (
+    ExportBuildResult,
+    ExportMetadata,
+    PdfMode,
+    write_archive_pdf_export,
+    write_markdown_export,
+    write_native_pdf_export,
+)
+from remarkable_mcp.documents.extract import (
+    extract_text_from_document_zip,
+    extract_text_from_epub,
+    extract_text_from_pdf,
+    find_similar_documents,
+    get_background_color,
+    get_cached_ocr_result,
+    get_document_file_type,
+    get_document_page_count,
+    get_ocr_backend,
+    render_mapped_pdf_page_from_document_zip,
+    render_merged_page_from_document_zip,
+    render_page_from_document_zip,
+    render_page_from_document_zip_svg,
+    render_page_full_page_from_document_zip,
+    render_tablet_pdf_page_to_png,
+)
+from remarkable_mcp.server import mcp
+from remarkable_mcp.transports.api import (
+    REMARKABLE_TOKEN,
+    download_raw_file,
+    get_file_type,
+    get_item_path,
+    get_items_by_id,
+    get_items_by_parent,
+    get_rmapi,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _get_root_path() -> str:
+    """Get the configured root path filter, or '/' for full access.
+
+    Handles: empty string, '/', '/Work', '/Work/', 'Work' -> normalized path
+    """
+    root = os.environ.get("REMARKABLE_ROOT_PATH", "").strip()
+    # Empty or "/" means full access
+    if not root or root == "/":
+        return "/"
+    # Normalize: ensure starts with / and no trailing slash
+    if not root.startswith("/"):
+        root = "/" + root
+    if root.endswith("/"):
+        root = root.rstrip("/")
+    return root
+
+
+def _is_within_root(path: str, root: str) -> bool:
+    """Check if a path is within the configured root (case-insensitive)."""
+    if root == "/":
+        return True
+    # Path must equal root or be a child of root (case-insensitive)
+    path_lower = path.lower()
+    root_lower = root.lower()
+    return path_lower == root_lower or path_lower.startswith(root_lower + "/")
+
+
+def _apply_root_filter(path: str) -> str:
+    """Apply root filter to a path for display/API purposes.
+
+    If root is '/Work', then '/Work/Project' becomes '/Project' in output.
+    Case-insensitive matching, preserves original case in output.
+    """
+    root = _get_root_path()
+    if root == "/":
+        return path
+    path_lower = path.lower()
+    root_lower = root.lower()
+    if path_lower == root_lower:
+        return "/"
+    if path_lower.startswith(root_lower + "/"):
+        return path[len(root) :]
+    return path
+
+
+def _resolve_root_path(path: str) -> str:
+    """Resolve a user-provided path to the actual path on device.
+
+    If root is '/Work', then '/Project' becomes '/Work/Project'.
+    """
+    root = _get_root_path()
+    if root == "/":
+        return path
+    if path == "/":
+        return root
+    # Prepend root to the path
+    return root + path
+
+
+def _find_target_document(collection, items_by_id: dict, document: str):
+    """Find an in-scope document by display name or full path."""
+    root = _get_root_path()
+    actual_document = _resolve_root_path(document) if document.startswith("/") else document
+    document_lower = actual_document.lower().strip("/")
+    for item in collection:
+        if item.is_folder or _is_cloud_archived(item):
+            continue
+        item_path = get_item_path(item, items_by_id)
+        if not _is_within_root(item_path, root):
+            continue
+        if item.VissibleName.lower() == document_lower:
+            return item
+        if item_path.lower().strip("/") == document_lower:
+            return item
+    return None
+
+
+# Base annotations for read-only operations
+_BASE_ANNOTATIONS = {
+    "read_only_hint": True,
+    "destructive_hint": False,
+    "idempotent_hint": True,
+    "open_world_hint": False,  # Private cloud account, not open world
+}
+
+# Unique annotations for each tool with descriptive titles
+READ_ANNOTATIONS = ToolAnnotations(
+    title="Read reMarkable Document",
+    **_BASE_ANNOTATIONS,
+)
+
+BROWSE_ANNOTATIONS = ToolAnnotations(
+    title="Browse reMarkable Library",
+    **_BASE_ANNOTATIONS,
+)
+
+SEARCH_ANNOTATIONS = ToolAnnotations(
+    title="Search reMarkable Documents",
+    **_BASE_ANNOTATIONS,
+)
+
+RECENT_ANNOTATIONS = ToolAnnotations(
+    title="Get Recent reMarkable Documents",
+    **_BASE_ANNOTATIONS,
+)
+
+STATUS_ANNOTATIONS = ToolAnnotations(
+    title="Check reMarkable Connection",
+    **_BASE_ANNOTATIONS,
+)
+
+IMAGE_ANNOTATIONS = ToolAnnotations(
+    title="Get reMarkable Page Image",
+    **_BASE_ANNOTATIONS,
+)
+
+EXPORT_ANNOTATIONS = ToolAnnotations(
+    title="Export reMarkable Document",
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=False,
+)
+
+# Default page size for pagination (characters) - used for PDFs/EPUBs
+DEFAULT_PAGE_SIZE = 8000
+
+
+def _is_cloud_archived(item) -> bool:
+    """Check if an item is cloud-archived (not available on device)."""
+    # SSH/local-dir/USB expose an explicit property. Require a real bool so
+    # permissive proxy objects do not accidentally hide otherwise valid items.
+    archived = getattr(item, "is_cloud_archived", None)
+    if isinstance(archived, bool):
+        return archived
+    # Cloud mode: check parent == "trash"
+    parent = item.Parent if hasattr(item, "Parent") else getattr(item, "parent", "")
+    return parent == "trash"
+
+
+def _modified_sort_key(item) -> float:
+    """Return a sortable timestamp for an item's modified date.
+
+    Normalizes ``ModifiedClient`` to a float epoch timestamp so documents with a
+    missing/null modified date (e.g. freshly-created notebooks) sort to the
+    bottom instead of crashing the comparator.
+
+    A plain sentinel ``datetime`` cannot be used here: USB ``ModifiedClient``
+    values are timezone-aware (parsed via ``fromisoformat``) while cloud and SSH
+    values are naive (parsed via ``fromtimestamp``), and Python refuses to
+    compare naive and aware datetimes. Reducing everything to ``.timestamp()``
+    sidesteps both the str/datetime and the naive/aware comparison errors.
+    """
+    modified = getattr(item, "ModifiedClient", None)
+    if isinstance(modified, datetime):
+        try:
+            return modified.timestamp()
+        except (OverflowError, OSError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _is_pdf_payload(data: Optional[bytes]) -> bool:
+    """Return whether transport bytes are a native PDF rather than an rmdoc zip."""
+    return bool(data and data.lstrip().startswith(b"%PDF"))
+
+
+def _count_pdf_pages(pdf_bytes: bytes) -> int:
+    """Count pages in a native PDF returned instead of an rmdoc archive."""
+    import fitz
+
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+        return len(document)
+
+
+def _ocr_png_tesseract(png_path: Path) -> Optional[str]:
+    """
+    OCR a PNG file using Tesseract.
+
+    Args:
+        png_path: Path to the PNG file
+
+    Returns:
+        Extracted text, or None if OCR failed
+    """
+    try:
+        import pytesseract
+        from PIL import Image as PILImage
+        from PIL import ImageFilter, ImageOps
+
+        img = PILImage.open(png_path)
+
+        # Convert to grayscale
+        img = img.convert("L")
+
+        # Increase contrast
+        img = ImageOps.autocontrast(img, cutoff=2)
+
+        # Slight sharpening
+        img = img.filter(ImageFilter.SHARPEN)
+
+        # Run OCR with settings optimized for sparse handwriting
+        custom_config = r"--psm 11 --oem 3"
+        text = pytesseract.image_to_string(img, config=custom_config)
+
+        return text.strip() if text.strip() else None
+
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
+def _ocr_png_google_vision(png_path: Path) -> Optional[str]:
+    """
+    OCR a PNG file using Google Cloud Vision API.
+
+    Args:
+        png_path: Path to the PNG file
+
+    Returns:
+        Extracted text, or None if OCR failed
+    """
+    import base64
+
+    import requests
+
+    api_key = os.environ.get("GOOGLE_VISION_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        with open(png_path, "rb") as f:
+            image_content = base64.b64encode(f.read()).decode("utf-8")
+
+        url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
+        payload = {
+            "requests": [
+                {
+                    "image": {"content": image_content},
+                    "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
+                }
+            ]
+        }
+
+        response = requests.post(url, json=payload, timeout=60)
+        if response.status_code == 200:
+            data = response.json()
+            if "responses" in data and data["responses"]:
+                resp = data["responses"][0]
+                if "fullTextAnnotation" in resp:
+                    text = resp["fullTextAnnotation"]["text"]
+                    return text.strip() if text.strip() else None
+
+    except Exception:
+        # Silently fail - OCR is best-effort and caller will handle None
+        pass
+
+    return None
+
+
+@mcp.tool(annotations=READ_ANNOTATIONS)
+async def remarkable_read(
+    document: str,
+    content_type: Literal["text", "raw", "annotations"] = "text",
+    page: int = 1,
+    grep: Optional[str] = None,
+    include_ocr: bool = False,
+) -> str:
+    """
+    <usecase>Read and extract text content from a reMarkable document.</usecase>
+    <instructions>
+    Extracts content from a document with pagination to preserve context window.
+
+    Content types:
+    - "text" (default): Full extracted text (PDF/EPUB content + annotations)
+    - "raw": Original PDF/EPUB text only (no annotations). Works in every
+      transport, as long as the source file is present (very large PDFs/EPUBs
+      may not be synced to the cloud).
+    - "annotations": Only annotations, highlights, and handwritten notes
+
+    Use pagination to read large documents without overwhelming context:
+    - Start with page=1 (default)
+    - Check "more" field - if true, there's more content
+    - Use "next_page" value to get the next page
+    - "total_pages" is the physical document count; "content_pages" is the
+      extracted-text count used by page/more/next_page
+    - "total_pages_known" reports whether the physical count was available.
+      Raw PDF reads count the downloaded PDF directly. If a raw EPUB archive
+      cannot be read, content still returns with total_pages=null.
+    - If older USB firmware returns only a native PDF, "text" returns source
+      text without annotations and "annotations" reports that the archive is
+      unavailable instead of trying to parse the PDF as a zip.
+
+    Use grep to search for specific content on the current page.
+
+    OCR uses Google Vision when configured, otherwise Tesseract.
+    </instructions>
+    <parameters>
+    - document: Document name or path (use remarkable_browse to find documents)
+    - content_type: "text" (full), "raw" (PDF/EPUB only), "annotations" (notes only)
+    - page: Extracted-content page number (default: 1). Physical document pages
+      are reported separately as total_pages.
+    - grep: Optional regex pattern to filter content (searches current page)
+    - include_ocr: Enable handwriting OCR for annotations (default: False)
+    </parameters>
+    <examples>
+    - remarkable_read("Meeting Notes")  # Get first page of text
+    - remarkable_read("Book.pdf", content_type="raw")  # Get raw PDF text
+    - remarkable_read("Notes", content_type="annotations")  # Only annotations
+    - remarkable_read("Report", page=2)  # Get second page
+    - remarkable_read("Manual", grep="installation")  # Search for keyword
+    </examples>
+    """
+    try:
+        client = await run_blocking(get_rmapi)
+        collection = await run_blocking(client.get_meta_items)
+        items_by_id = get_items_by_id(collection)
+
+        # Validate parameters
+        page = max(1, page)
+        # Internal page size for PDF/EPUB character-based pagination
+        page_size = DEFAULT_PAGE_SIZE
+
+        root = _get_root_path()
+        documents = [
+            item for item in collection if not item.is_folder and not _is_cloud_archived(item)
+        ]
+        target_doc = _find_target_document(collection, items_by_id, document)
+
+        if not target_doc:
+            # Find similar documents for suggestion (only within root)
+            filtered_docs = [
+                doc for doc in documents if _is_within_root(get_item_path(doc, items_by_id), root)
+            ]
+            similar = find_similar_documents(document, filtered_docs)
+            search_term = document.split()[0] if document else "notes"
+            return make_error(
+                error_type="document_not_found",
+                message=f"Document not found: '{document}'",
+                suggestion=(
+                    f"Try remarkable_browse(query='{search_term}') to search, "
+                    "or remarkable_browse('/') to list all files."
+                ),
+                did_you_mean=similar if similar else None,
+            )
+
+        doc_path = get_item_path(target_doc, items_by_id)
+        file_type = await run_blocking(get_file_type, client, target_doc)
+        archive_bytes: Optional[bytes] = None
+
+        async def load_archive() -> bytes:
+            nonlocal archive_bytes
+            if archive_bytes is None:
+                archive_bytes = await run_blocking(client.download, target_doc)
+            return archive_bytes
+
+        async def count_archive_pages() -> int:
+            raw_doc = await load_archive()
+            if _is_pdf_payload(raw_doc):
+                return await run_blocking(_count_pdf_pages, raw_doc)
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                tmp.write(raw_doc)
+                tmp_path = Path(tmp.name)
+            try:
+                return await run_blocking(get_document_page_count, tmp_path)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+        # Collect content based on content_type
+        text_parts = []
+        raw_available = False
+        raw_data: Optional[bytes] = None
+        page_count_note = None
+
+        # Get raw PDF/EPUB content if requested or for "text" mode
+        if content_type in ("text", "raw") and file_type in ("pdf", "epub"):
+            raw_data = await run_blocking(download_raw_file, client, target_doc, file_type)
+            if raw_data:
+                raw_available = True
+                with tempfile.NamedTemporaryFile(suffix=f".{file_type}", delete=False) as tmp:
+                    tmp.write(raw_data)
+                    tmp_path = Path(tmp.name)
+                try:
+                    if file_type == "pdf":
+                        raw_text = await run_blocking(extract_text_from_pdf, tmp_path)
+                    else:
+                        raw_text = await run_blocking(extract_text_from_epub, tmp_path)
+                    if raw_text:
+                        text_parts.append(raw_text)
+                finally:
+                    tmp_path.unlink(missing_ok=True)
+            elif content_type == "raw":
+                # The document has no source PDF/EPUB blob (e.g. a pure notebook).
+                return make_error(
+                    error_type="raw_not_available",
+                    message=f"No raw {file_type.upper()} source file found for this document",
+                    suggestion=(
+                        "Use content_type='text' for extracted content, "
+                        "or content_type='annotations' for handwritten notes."
+                    ),
+                )
+
+        # Get annotations/typed text (for "text" or "annotations" mode)
+        notebook_pages = []  # List of page content for notebook pagination
+        ocr_backend_used = None  # Track which OCR backend was used
+        content = None  # Will hold extraction result
+
+        async def read_native_pdf_content(pdf_bytes: bytes):
+            nonlocal file_type, page_count_note, raw_available
+            if content_type == "annotations":
+                return None, make_error(
+                    error_type="annotations_not_available",
+                    message=(
+                        "Annotations are unavailable because this transport "
+                        "returned a native PDF instead of a document archive."
+                    ),
+                    suggestion=(
+                        "Use content_type='raw' or 'text', or connect through "
+                        "cloud/SSH or newer USB firmware that supports rmdoc."
+                    ),
+                )
+
+            file_type = "pdf"
+            if not raw_available:
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                    tmp.write(pdf_bytes)
+                    pdf_path = Path(tmp.name)
+                try:
+                    native_text = await run_blocking(extract_text_from_pdf, pdf_path)
+                    if native_text:
+                        text_parts.append(native_text)
+                    raw_available = True
+                finally:
+                    pdf_path.unlink(missing_ok=True)
+
+            try:
+                native_pdf_pages = await run_blocking(_count_pdf_pages, pdf_bytes)
+            except Exception as e:
+                logger.warning(
+                    "Could not count native PDF pages for %s: %s",
+                    target_doc.ID,
+                    e,
+                )
+                native_pdf_pages = 0
+                page_count_note = (
+                    "Physical page count unavailable; source PDF text was "
+                    "returned without annotations."
+                )
+
+            return {
+                "typed_text": [],
+                "highlights": [],
+                "handwritten_text": None,
+                "pages": native_pdf_pages,
+                "page_ids": [],
+                "annotated_pages": [],
+                "ocr_backend": None,
+                "tags": [],
+            }, None
+
+        if content_type in ("text", "annotations"):
+            # For notebooks (no PDF/EPUB), use page-based pagination
+            is_notebook = file_type not in ("pdf", "epub")
+
+            if is_notebook and include_ocr:
+                cached = await run_blocking(
+                    get_cached_ocr_result,
+                    target_doc.ID,
+                    include_ocr=True,
+                    ocr_backend=None,
+                )
+                if cached and cached.get("handwritten_text"):
+                    notebook_pages = cached["handwritten_text"]
+                    ocr_backend_used = cached.get("ocr_backend")
+                    content = cached
+
+            if not notebook_pages and is_notebook:
+                raw_doc = await load_archive()
+                if _is_pdf_payload(raw_doc):
+                    content, native_error = await read_native_pdf_content(raw_doc)
+                    if native_error:
+                        return native_error
+                    is_notebook = False
+                else:
+                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                        tmp.write(raw_doc)
+                        tmp_path = Path(tmp.name)
+
+                    try:
+                        content = await run_blocking(
+                            extract_text_from_document_zip,
+                            tmp_path,
+                            include_ocr=include_ocr,
+                            doc_id=target_doc.ID,
+                        )
+                        if content.get("handwritten_text"):
+                            notebook_pages = content["handwritten_text"]
+                            ocr_backend_used = content.get("ocr_backend")
+                    finally:
+                        tmp_path.unlink(missing_ok=True)
+
+            # For non-notebooks or when no OCR pages, build annotation sections
+            if not (is_notebook and notebook_pages):
+                if content is None:
+                    # Need to extract if we haven't already
+                    raw_doc = await load_archive()
+                    if _is_pdf_payload(raw_doc):
+                        content, native_error = await read_native_pdf_content(raw_doc)
+                        if native_error:
+                            return native_error
+                    else:
+                        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                            tmp.write(raw_doc)
+                            tmp_path = Path(tmp.name)
+                        try:
+                            content = await run_blocking(
+                                extract_text_from_document_zip,
+                                tmp_path,
+                                include_ocr=include_ocr,
+                                doc_id=target_doc.ID,
+                            )
+                        finally:
+                            tmp_path.unlink(missing_ok=True)
+
+                # Add annotations section
+                annotation_parts = []
+                if content.get("typed_text"):
+                    annotation_parts.extend(content["typed_text"])
+                # Per-page index of highlights / handwritten notes: surfaces only
+                # the annotated pages (and their highlighted text) so the reader
+                # need not page through the whole document to find them.
+                annotated_pages = content.get("annotated_pages") or []
+                shown_highlights = set()
+                if annotated_pages:
+                    annotation_parts.append("\n--- Annotated pages ---")
+                    for ap in annotated_pages:
+                        marks = []
+                        if ap.get("has_handwriting"):
+                            marks.append("handwritten notes")
+                        n_hl = len(ap.get("highlights") or [])
+                        if n_hl:
+                            marks.append(f"{n_hl} highlight" + ("s" if n_hl != 1 else ""))
+                        annotation_parts.append(
+                            f"Page {ap['page']}: " + (", ".join(marks) or "annotated")
+                        )
+                        for h in ap.get("highlights") or []:
+                            annotation_parts.append(f"  • {h}")
+                            shown_highlights.add(h)
+                # Highlights not covered by the per-page index above — e.g. from
+                # the legacy .highlights JSON (older firmware), which has no page
+                # attribution. Without this, a doc whose pages carry pen strokes
+                # would suppress its legacy highlight text entirely.
+                other_highlights = [
+                    h for h in content.get("highlights") or [] if h not in shown_highlights
+                ]
+                if other_highlights:
+                    annotation_parts.append("\n--- Highlights ---")
+                    annotation_parts.extend(other_highlights)
+                if content.get("handwritten_text"):
+                    annotation_parts.append("\n--- Handwritten (OCR) ---")
+                    annotation_parts.extend(content["handwritten_text"])
+
+                if annotation_parts:
+                    if text_parts and content_type == "text":
+                        text_parts.append("\n\n=== Annotations ===\n")
+                    text_parts.extend(annotation_parts)
+
+        physical_pages = int(content.get("pages") or 0) if content else 0
+        if physical_pages <= 0 and page_count_note is None:
+            if content_type == "raw" and file_type == "pdf":
+                try:
+                    physical_pages = await run_blocking(_count_pdf_pages, raw_data)
+                except Exception as e:
+                    logger.warning("Could not count raw PDF pages for %s: %s", target_doc.ID, e)
+                    page_count_note = (
+                        "Physical page count unavailable; raw PDF content was returned."
+                    )
+            else:
+                try:
+                    physical_pages = await count_archive_pages()
+                except Exception as e:
+                    if content_type != "raw" or file_type != "epub":
+                        raise
+                    logger.warning("Could not count raw EPUB pages for %s: %s", target_doc.ID, e)
+                    page_count_note = (
+                        "Physical page count unavailable because the document archive "
+                        "could not be read; raw EPUB content was returned."
+                    )
+        raw_page_count_unknown = (
+            physical_pages <= 0 and content_type == "raw" and file_type in ("pdf", "epub")
+        )
+        if raw_page_count_unknown and page_count_note is None:
+            page_count_note = (
+                f"Physical page count unavailable; raw {file_type.upper()} content was returned."
+            )
+        page_count_unknown = physical_pages <= 0 and page_count_note is not None
+        total_pages = None if page_count_unknown else max(1, physical_pages)
+        total_pages_known = total_pages is not None
+        physical_page_summary = (
+            f"document has {total_pages} physical page(s)"
+            if total_pages_known
+            else "physical document page count is unavailable"
+        )
+
+        # OCR results remain content-pagination units. They can be fewer than
+        # physical pages when blank or non-OCR pages are omitted.
+        if notebook_pages:
+            content_pages = len(notebook_pages)
+
+            if page > content_pages:
+                return make_error(
+                    error_type="page_out_of_range",
+                    message=(
+                        f"Content page {page} does not exist. Extracted content has "
+                        f"{content_pages} page(s); the document has {total_pages} "
+                        "physical page(s)."
+                    ),
+                    suggestion=f"Use page=1 to {content_pages} to read extracted content.",
+                )
+
+            page_content = notebook_pages[page - 1]
+            has_more = page < content_pages
+
+            # Apply grep filter if specified
+            grep_matches = 0
+            if grep:
+                try:
+                    pattern = re.compile(grep, re.IGNORECASE | re.MULTILINE)
+                    if not pattern.search(page_content):
+                        # No match on this page, search all pages
+                        matching_pages = []
+                        for i, pg in enumerate(notebook_pages, 1):
+                            if pattern.search(pg):
+                                matching_pages.append(i)
+                        if matching_pages:
+                            return make_error(
+                                error_type="no_match_on_page",
+                                message=f"No match for '{grep}' on page {page}.",
+                                suggestion=f"Matches found on page(s): {matching_pages}. "
+                                f"Try remarkable_read('{document}', "
+                                f"page={matching_pages[0]}, grep='{grep}').",
+                            )
+                        else:
+                            return make_error(
+                                error_type="no_grep_matches",
+                                message=f"No matches for '{grep}' in document.",
+                                suggestion="Try a different search term.",
+                            )
+                    grep_matches = len(pattern.findall(page_content))
+                except re.error as e:
+                    return make_error(
+                        error_type="invalid_grep",
+                        message=f"Invalid regex pattern: {e}",
+                        suggestion="Use a valid regex pattern or simple text string.",
+                    )
+
+            result = {
+                "document": target_doc.VissibleName,
+                "path": _apply_root_filter(doc_path),
+                "file_type": "notebook",
+                "content_type": content_type,
+                "content": page_content,
+                "page": page,
+                "total_pages": total_pages,
+                "total_pages_known": total_pages_known,
+                "content_pages": content_pages,
+                "page_type": "notebook",
+                "total_chars": len(page_content),
+                "more": has_more,
+                "modified": (
+                    target_doc.ModifiedClient if hasattr(target_doc, "ModifiedClient") else None
+                ),
+            }
+
+            if ocr_backend_used:
+                result["ocr_backend"] = ocr_backend_used
+
+            if has_more:
+                result["next_page"] = page + 1
+
+            if grep:
+                result["grep"] = grep
+                result["grep_matches"] = grep_matches
+
+            hint_parts = [f"Notebook content page {page}/{content_pages}; {physical_page_summary}."]
+            if has_more:
+                doc_name = target_doc.VissibleName
+                hint_parts.append(f"Next: remarkable_read('{doc_name}', page={page + 1}).")
+            else:
+                hint_parts.append("(last page)")
+            if grep_matches:
+                hint_parts.insert(0, f"Found {grep_matches} match(es) for '{grep}'.")
+
+            return make_response(result, " ".join(hint_parts))
+
+        # Combine all content
+        full_text = "\n\n".join(text_parts) if text_parts else ""
+        total_chars = len(full_text)
+
+        # Apply grep filter if specified
+        grep_matches = 0
+        if grep and full_text:
+            try:
+                pattern = re.compile(grep, re.IGNORECASE | re.MULTILINE)
+                # Find all matches and include context
+                matches = []
+                for match in pattern.finditer(full_text):
+                    start = max(0, match.start() - 100)
+                    end = min(len(full_text), match.end() + 100)
+                    context = full_text[start:end]
+                    # Add ellipsis if truncated
+                    if start > 0:
+                        context = "..." + context
+                    if end < len(full_text):
+                        context = context + "..."
+                    matches.append(context)
+                    grep_matches += 1
+
+                if matches:
+                    full_text = "\n\n---\n\n".join(matches)
+                    total_chars = len(full_text)
+                else:
+                    full_text = ""
+                    total_chars = 0
+            except re.error as e:
+                return make_error(
+                    error_type="invalid_grep",
+                    message=f"Invalid regex pattern: {e}",
+                    suggestion="Use a valid regex pattern or simple text string.",
+                )
+
+        # Apply pagination
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+
+        # Handle empty content case - auto-retry with OCR if not already enabled
+        if total_chars == 0 and not include_ocr and file_type not in ("pdf", "epub"):
+            # Auto-retry with OCR for notebooks
+            import json
+
+            ocr_result = await remarkable_read(
+                document=document,
+                content_type=content_type,
+                page=page,
+                grep=grep,
+                include_ocr=True,  # Enable OCR automatically
+            )
+            result_data = json.loads(ocr_result)
+            if "_error" not in result_data:
+                result_data["_ocr_auto_enabled"] = True
+                result_data["_hint"] = (
+                    "OCR auto-enabled (notebook had no typed text). " + result_data.get("_hint", "")
+                )
+            return json.dumps(result_data, indent=2)
+
+        if total_chars == 0:
+            if page > 1:
+                return make_error(
+                    error_type="page_out_of_range",
+                    message=(
+                        f"Content page {page} does not exist. Extracted content has "
+                        f"1 page; {physical_page_summary}."
+                    ),
+                    suggestion="Use page=1 to start from the beginning.",
+                )
+            # Return empty result for page 1
+            result = {
+                "document": target_doc.VissibleName,
+                "path": _apply_root_filter(doc_path),
+                "file_type": file_type or "notebook",
+                "content_type": content_type,
+                "content": "",
+                "page": 1,
+                "total_pages": total_pages,
+                "total_pages_known": total_pages_known,
+                "content_pages": 1,
+                "total_chars": 0,
+                "more": False,
+                "modified": (
+                    target_doc.ModifiedClient if hasattr(target_doc, "ModifiedClient") else None
+                ),
+            }
+            hint = (
+                f"Document '{target_doc.VissibleName}' has no extractable text content. "
+                "This may be a handwritten notebook - try include_ocr=True for OCR extraction."
+            )
+            if page_count_note:
+                result["page_count_note"] = page_count_note
+                hint = f"{hint} {page_count_note}"
+            return make_response(result, hint)
+
+        if start_idx >= total_chars:
+            # Page out of range
+            content_pages = max(1, (total_chars + page_size - 1) // page_size)
+            return make_error(
+                error_type="page_out_of_range",
+                message=(
+                    f"Content page {page} does not exist. Extracted content has "
+                    f"{content_pages} page(s); {physical_page_summary}."
+                ),
+                suggestion="Use page=1 to start from the beginning.",
+            )
+
+        page_content = full_text[start_idx:end_idx]
+        has_more = end_idx < total_chars
+        content_pages = max(1, (total_chars + page_size - 1) // page_size)
+
+        result = {
+            "document": target_doc.VissibleName,
+            "path": _apply_root_filter(doc_path),
+            "file_type": file_type or "notebook",
+            "content_type": content_type,
+            "content": page_content,
+            "page": page,
+            "total_pages": total_pages,
+            "total_pages_known": total_pages_known,
+            "content_pages": content_pages,
+            "total_chars": total_chars,
+            "more": has_more,
+            "modified": (
+                target_doc.ModifiedClient if hasattr(target_doc, "ModifiedClient") else None
+            ),
+        }
+
+        # Add tags if present (from listing metadata, or from extraction in USB mode)
+        tags = getattr(target_doc, "tags", None) or (content.get("tags") if content else None)
+        if tags:
+            result["tags"] = tags
+
+        if has_more:
+            result["next_page"] = page + 1
+
+        if grep:
+            result["grep"] = grep
+            result["grep_matches"] = grep_matches
+
+        # Build contextual hint
+        hint_parts = []
+
+        if grep:
+            if grep_matches > 0:
+                hint_parts.append(f"Found {grep_matches} match(es) for '{grep}'.")
+            else:
+                hint_parts.append(f"No matches for '{grep}' on this page.")
+                if has_more:
+                    hint_parts.append("Try searching other pages.")
+
+        if has_more:
+            hint_parts.append(
+                f"Content page {page}/{content_pages}; {physical_page_summary}. "
+                f"Next: remarkable_read('{document}', page={page + 1})"
+            )
+        else:
+            hint_parts.append(
+                f"Content page {page}/{content_pages} (complete); {physical_page_summary}."
+            )
+        if page_count_note:
+            result["page_count_note"] = page_count_note
+            hint_parts.append(page_count_note)
+
+        if content_type == "text" and not raw_available and file_type in ("pdf", "epub"):
+            hint_parts.append(
+                "No source PDF/EPUB blob was found for this document, so only "
+                "annotations were extracted. Very large files may not be synced "
+                "to the cloud; try SSH/USB mode with the device connected."
+            )
+
+        return make_response(result, " ".join(hint_parts))
+
+    except Exception as e:
+        return make_error(
+            error_type="read_failed",
+            message=str(e),
+            suggestion="Check remarkable_status() to verify your connection.",
+        )
+
+
+@mcp.tool(annotations=BROWSE_ANNOTATIONS)
+async def remarkable_browse(
+    path: str = "/", query: Optional[str] = None, tags: Optional[List[str]] = None
+) -> str:
+    """
+    <usecase>Browse your reMarkable library or search for documents.</usecase>
+    <instructions>
+    Three modes:
+    1. Browse mode (default): List contents of a folder
+       - Use path="/" for root folder
+       - Use path="/FolderName" to navigate into folders
+    2. Search mode: Find documents by name
+       - Set query="search term" to search across all documents
+    3. Filter by tags: Find documents with specific tags
+       - Set tags=["tag1", "tag2"] to filter by tags
+       - Works in both browse and search modes
+
+    Results include document names, types, modification dates, and tags.
+
+    Note: If REMARKABLE_ROOT_PATH is configured, only documents within that
+    folder are accessible. Paths are relative to the root path.
+    </instructions>
+    <parameters>
+    - path: Folder path to browse (default: "/" for root)
+    - query: Search term to find documents by name (optional, triggers search mode)
+    - tags: List of tags to filter documents (optional, case-insensitive)
+    </parameters>
+    <examples>
+    - remarkable_browse()  # List root folder
+    - remarkable_browse("/Work")  # List Work folder
+    - remarkable_browse(query="meeting")  # Search for "meeting"
+    - remarkable_browse(tags=["important"])  # Show documents with "important" tag
+    - remarkable_browse(query="project", tags=["work"])  # Search with tag filter
+    </examples>
+    """
+    try:
+        client = await run_blocking(get_rmapi)
+        collection = await run_blocking(client.get_meta_items)
+        items_by_id = get_items_by_id(collection)
+        items_by_parent = get_items_by_parent(collection)
+
+        root = _get_root_path()
+        # Resolve user path to actual device path
+        actual_path = _resolve_root_path(path)
+
+        # Search mode
+        if query:
+            query_lower = query.lower()
+            matches = []
+
+            for item in collection:
+                # Skip cloud-archived items
+                if _is_cloud_archived(item):
+                    continue
+                item_path = get_item_path(item, items_by_id)
+                # Filter by root path
+                if not _is_within_root(item_path, root):
+                    continue
+                # Filter by tags if provided
+                if tags:
+                    item_tags_lower = [
+                        t.lower() for t in (item.tags if hasattr(item, "tags") else [])
+                    ]
+                    if not any(tag.lower() in item_tags_lower for tag in tags):
+                        continue
+                if query_lower in item.VissibleName.lower():
+                    match_info = {
+                        "name": item.VissibleName,
+                        "path": _apply_root_filter(item_path),
+                        "type": "folder" if item.is_folder else "document",
+                        "modified": (
+                            item.ModifiedClient if hasattr(item, "ModifiedClient") else None
+                        ),
+                    }
+                    # Add tags if present
+                    if hasattr(item, "tags") and item.tags:
+                        match_info["tags"] = item.tags
+                    matches.append(match_info)
+
+            matches.sort(key=lambda x: x["name"])
+
+            result = {"mode": "search", "query": query, "count": len(matches), "results": matches}
+            if tags:
+                result["filter_tags"] = tags
+
+            if matches:
+                first_doc = next((m for m in matches if m["type"] == "document"), None)
+                if first_doc:
+                    hint = (
+                        f"Found {len(matches)} results. "
+                        f"To read a document: remarkable_read('{first_doc['name']}')."
+                    )
+                else:
+                    hint = (
+                        f"Found {len(matches)} folders. "
+                        f"To browse one: remarkable_browse('{matches[0]['path']}')."
+                    )
+            else:
+                filter_desc = f" with tags {tags}" if tags else ""
+                hint = (
+                    f"No results for '{query}'{filter_desc}. "
+                    "Try remarkable_browse('/') to see all files, "
+                    "or use a different search term."
+                )
+
+            return make_response(result, hint)
+
+        # Browse mode - use actual_path (with root applied)
+        if actual_path == "/" or actual_path == "":
+            target_parent = ""
+        else:
+            # Navigate to the folder (case-insensitive)
+            path_parts = [p for p in actual_path.strip("/").split("/") if p]
+            current_parent = ""
+
+            for i, part in enumerate(path_parts):
+                part_lower = part.lower()
+                found = False
+                found_document = None
+
+                for item in items_by_parent.get(current_parent, []):
+                    if item.VissibleName.lower() == part_lower:
+                        if item.is_folder:
+                            current_parent = item.ID
+                            found = True
+                            break
+                        else:
+                            # Found a document with this name
+                            found_document = item
+
+                if not found:
+                    # Check if it's a document (only valid as the last path part)
+                    if found_document and i == len(path_parts) - 1:
+                        # Auto-redirect: return first page of the document
+                        doc_path = get_item_path(found_document, items_by_id)
+                        # Check if within root before redirecting
+                        if not _is_within_root(doc_path, root):
+                            return make_error(
+                                error_type="access_denied",
+                                message=(
+                                    f"Document '{found_document.VissibleName}' "
+                                    "is outside the configured root path."
+                                ),
+                                suggestion="Check REMARKABLE_ROOT_PATH configuration.",
+                            )
+                        # Call remarkable_read internally and add redirect note
+                        read_result = await remarkable_read(
+                            _apply_root_filter(doc_path),
+                            page=1,
+                        )
+                        import json
+
+                        result_data = json.loads(read_result)
+                        if "_error" not in result_data:
+                            result_data["_redirected_from"] = f"browse:{path}"
+                            result_data["_hint"] = (
+                                f"Auto-redirected from browse to read. "
+                                f"{result_data.get('_hint', '')}"
+                            )
+                        return json.dumps(result_data, indent=2)
+
+                    # Folder not found - suggest alternatives
+                    available_folders = [
+                        item.VissibleName
+                        for item in items_by_parent.get(current_parent, [])
+                        if item.is_folder
+                    ]
+                    available_docs = [
+                        item.VissibleName
+                        for item in items_by_parent.get(current_parent, [])
+                        if not item.is_folder
+                    ]
+                    suggestion = "Use remarkable_browse('/') to see root folder contents."
+                    if available_docs:
+                        # Check if user might be looking for a document
+                        for doc_name in available_docs:
+                            if doc_name.lower() == part_lower:
+                                suggestion = (
+                                    f"'{doc_name}' is a document. "
+                                    f"Use remarkable_read('{doc_name}') to read it."
+                                )
+                                break
+                    return make_error(
+                        error_type="folder_not_found",
+                        message=f"Folder not found: '{part}'",
+                        suggestion=suggestion,
+                        did_you_mean=(available_folders[:5] if available_folders else None),
+                    )
+
+            target_parent = current_parent
+
+        items = items_by_parent.get(target_parent, [])
+
+        folders = []
+        documents = []
+
+        for item in sorted(items, key=lambda x: x.VissibleName.lower()):
+            # Skip cloud-archived items
+            if _is_cloud_archived(item):
+                continue
+            # Filter by tags if provided
+            if tags and not item.is_folder:
+                item_tags_lower = [t.lower() for t in (item.tags if hasattr(item, "tags") else [])]
+                if not any(tag.lower() in item_tags_lower for tag in tags):
+                    continue
+            if item.is_folder:
+                folders.append({"name": item.VissibleName, "id": item.ID})
+            else:
+                doc_info = {
+                    "name": item.VissibleName,
+                    "id": item.ID,
+                    "modified": (item.ModifiedClient if hasattr(item, "ModifiedClient") else None),
+                }
+                # Add tags if present
+                if hasattr(item, "tags") and item.tags:
+                    doc_info["tags"] = item.tags
+                documents.append(doc_info)
+
+        result = {"mode": "browse", "path": path, "folders": folders, "documents": documents}
+        if tags:
+            result["filter_tags"] = tags
+
+        # Build helpful hint
+        tag_desc = f" with tags {tags}" if tags else ""
+        hint_parts = [f"Found {len(folders)} folder(s) and {len(documents)} document(s){tag_desc}."]
+
+        if documents:
+            hint_parts.append(f"To read a document: remarkable_read('{documents[0]['name']}').")
+        if folders:
+            folder_path = f"{path.rstrip('/')}/{folders[0]['name']}"
+            hint_parts.append(f"To enter a folder: remarkable_browse('{folder_path}').")
+        if not folders and not documents:
+            hint_parts.append("This folder is empty.")
+
+        return make_response(result, " ".join(hint_parts))
+
+    except Exception as e:
+        return make_error(
+            error_type="browse_failed",
+            message=str(e),
+            suggestion="Check remarkable_status() to verify your connection.",
+        )
+
+
+@mcp.tool(annotations=RECENT_ANNOTATIONS)
+async def remarkable_recent(limit: int = 10, include_preview: bool = False) -> str:
+    """
+    <usecase>Get your most recently modified documents.</usecase>
+    <instructions>
+    Returns documents sorted by modification date (newest first).
+    Optionally includes a text preview of each document's content.
+
+    Use this to quickly find what you were working on recently.
+
+    Note: If REMARKABLE_ROOT_PATH is configured, only documents within that
+    folder are included.
+    </instructions>
+    <parameters>
+    - limit: Maximum documents to return (default: 10, max: 50 without preview, 10 with preview)
+    - include_preview: Include first ~200 chars of text content (default: False)
+    </parameters>
+    <examples>
+    - remarkable_recent()  # Last 10 documents
+    - remarkable_recent(limit=5, include_preview=True)  # With content preview
+    </examples>
+    """
+    try:
+        client = await run_blocking(get_rmapi)
+        collection = await run_blocking(client.get_meta_items)
+        items_by_id = get_items_by_id(collection)
+
+        # Clamp limit - lower max when previews enabled (expensive operation)
+        max_limit = 10 if include_preview else 50
+        limit = min(max(1, limit), max_limit)
+
+        root = _get_root_path()
+
+        # Get documents sorted by modified date (excluding archived, filtered by root)
+        documents = []
+        for item in collection:
+            if item.is_folder or _is_cloud_archived(item):
+                continue
+            item_path = get_item_path(item, items_by_id)
+            if not _is_within_root(item_path, root):
+                continue
+            documents.append(item)
+
+        documents.sort(key=_modified_sort_key, reverse=True)
+
+        results = []
+        for doc in documents[:limit]:
+            doc_path = get_item_path(doc, items_by_id)
+            doc_info = {
+                "name": doc.VissibleName,
+                "path": _apply_root_filter(doc_path),
+                "modified": (doc.ModifiedClient if hasattr(doc, "ModifiedClient") else None),
+            }
+            # Add tags if present
+            if hasattr(doc, "tags") and doc.tags:
+                doc_info["tags"] = doc.tags
+
+            if include_preview:
+                # Download and extract preview (skip notebooks - they need slow OCR)
+                file_type = await run_blocking(get_file_type, client, doc)
+                if file_type == "notebook":
+                    # Notebooks need OCR for preview, skip for performance
+                    doc_info["preview_skipped"] = "notebook (use remarkable_read with include_ocr)"
+                else:
+                    # PDFs and EPUBs have extractable text - fast to preview
+                    try:
+                        raw_doc = await run_blocking(client.download, doc)
+                        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                            tmp.write(raw_doc)
+                            tmp_path = Path(tmp.name)
+
+                        try:
+                            content = await run_blocking(
+                                extract_text_from_document_zip,
+                                tmp_path,
+                                include_ocr=False,
+                                doc_id=doc.ID,
+                            )
+                            preview_text = "\n".join(content["typed_text"])[:200]
+                            if preview_text:
+                                if len(preview_text) == 200:
+                                    doc_info["preview"] = preview_text + "..."
+                                else:
+                                    doc_info["preview"] = preview_text
+                            # No preview key if empty - cleaner response
+                        finally:
+                            tmp_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass  # No preview key on error - cleaner response
+
+            results.append(doc_info)
+
+        result = {"count": len(results), "documents": results}
+
+        if results:
+            next_limit = min(limit * 2, 50)
+            hint = (
+                f"Showing {len(results)} recent documents. "
+                f"To read one: remarkable_read('{results[0]['name']}'). "
+                f"To see more: remarkable_recent(limit={next_limit})."
+            )
+        else:
+            hint = "No documents found. Use remarkable_browse('/') to check your library."
+
+        return make_response(result, hint)
+
+    except Exception as e:
+        return make_error(
+            error_type="recent_failed",
+            message=str(e),
+            suggestion="Check remarkable_status() to verify your connection.",
+        )
+
+
+@mcp.tool(annotations=SEARCH_ANNOTATIONS)
+async def remarkable_search(
+    query: str,
+    grep: Optional[str] = None,
+    limit: int = 5,
+    include_ocr: bool = False,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """
+    <usecase>Search across multiple documents and return matching content.</usecase>
+    <instructions>
+    Searches document names for the query, then optionally searches content with grep.
+    Can filter by tags to narrow results.
+    Returns summaries from multiple documents in a single call.
+
+    This is efficient for finding information across your library without
+    making many individual tool calls.
+
+    Limits:
+    - Max 5 documents per search (to keep response size manageable)
+    - Returns first page (~8000 chars) of each matching document
+    - Use grep to filter to relevant sections
+    </instructions>
+    <parameters>
+    - query: Search term for document names
+    - grep: Optional pattern to search within document content
+    - limit: Max documents to return (default: 5, max: 5)
+    - include_ocr: Enable OCR for handwritten content (default: False)
+    - tags: List of tags to filter documents (optional, case-insensitive)
+    </parameters>
+    <examples>
+    - remarkable_search("meeting")  # Find docs with "meeting" in name
+    - remarkable_search("journal", grep="project")  # Find "project" in journals
+    - remarkable_search("notes", include_ocr=True)  # Search with OCR enabled
+    - remarkable_search("project", tags=["work"])  # Find work-tagged projects
+    </examples>
+    """
+    import json
+
+    try:
+        # Enforce limits
+        limit = min(max(1, limit), 5)
+
+        # First, find matching documents
+        browse_result = await remarkable_browse(query=query, tags=tags)
+        browse_data = json.loads(browse_result)
+
+        if "_error" in browse_data:
+            return browse_result
+
+        results = browse_data.get("results", [])
+        documents = [r for r in results if r.get("type") == "document"][:limit]
+
+        if not documents:
+            return make_error(
+                error_type="no_documents_found",
+                message=f"No documents found matching '{query}'.",
+                suggestion="Try a different search term or use remarkable_browse('/') to list all.",
+            )
+
+        # Read each document
+        search_results = []
+        for doc in documents:
+            doc_result = {
+                "name": doc["name"],
+                "path": doc["path"],
+                "modified": doc.get("modified"),
+            }
+            # Include tags if present
+            if "tags" in doc:
+                doc_result["tags"] = doc["tags"]
+
+            try:
+                read_result = await remarkable_read(
+                    document=doc["path"],
+                    page=1,
+                    grep=grep,
+                    include_ocr=include_ocr,
+                )
+                read_data = json.loads(read_result)
+
+                if "_error" not in read_data:
+                    doc_result["content"] = read_data.get("content", "")[:2000]  # Limit per doc
+                    doc_result["total_pages"] = read_data.get("total_pages", 1)
+                    doc_result["total_pages_known"] = read_data.get("total_pages_known", True)
+                    doc_result["content_pages"] = read_data.get("content_pages", 1)
+                    if grep:
+                        doc_result["grep_matches"] = read_data.get("grep_matches", 0)
+                    if len(read_data.get("content", "")) > 2000:
+                        doc_result["truncated"] = True
+                else:
+                    doc_result["error"] = read_data["_error"]["message"]
+            except Exception as e:
+                doc_result["error"] = str(e)
+
+            search_results.append(doc_result)
+
+        result = {
+            "query": query,
+            "grep": grep,
+            "count": len(search_results),
+            "documents": search_results,
+        }
+        if tags:
+            result["filter_tags"] = tags
+
+        # Build hint
+        docs_with_content = [d for d in search_results if "content" in d]
+        tag_desc = f" with tags {tags}" if tags else ""
+        if grep:
+            matches = sum(d.get("grep_matches", 0) for d in docs_with_content)
+            hint = (
+                f"Found {len(docs_with_content)} document(s){tag_desc} "
+                f"with {matches} grep match(es)."
+            )
+        else:
+            hint = f"Found {len(docs_with_content)} document(s) matching '{query}'{tag_desc}."
+
+        if docs_with_content:
+            hint += f" To read more: remarkable_read('{docs_with_content[0]['path']}')."
+
+        return make_response(result, hint)
+
+    except Exception as e:
+        return make_error(
+            error_type="search_failed",
+            message=str(e),
+            suggestion="Check remarkable_status() to verify your connection.",
+        )
+
+
+@mcp.tool(annotations=STATUS_ANNOTATIONS)
+async def remarkable_status() -> str:
+    """
+    <usecase>Check connection status, active transport, and write capabilities.</usecase>
+    <instructions>
+    Returns authentication status, the active transport (cloud, local-dir, ssh, or
+    usb-web), the document count, and a capability matrix describing what each
+    transport can do. Use this to verify your connection, choose a transport, or
+    troubleshoot.
+
+    Capability notes:
+    - Export is available in every transport and creates only a bounded temporary
+      local resource; it never modifies the tablet.
+    - Cloud (default): full read/render/export/upload/mkdir/move/rename/delete — no device
+      needed, works from anywhere your token is valid.
+    - SSH: full capabilities over a local/USB connection to the tablet.
+    - USB web: read, render, export, and upload (to root) only — the tablet's USB web
+      interface firmware exposes no folder/move/rename/delete endpoints. For full
+      write parity over a USB cable, use SSH mode pointed at the USB IP.
+    - Local directory: fully offline read/render/export access to the desktop app's sync
+      cache. Strictly read-only to avoid corrupting app-managed state.
+    Write tools (upload/mkdir/move/rename/delete) are enabled by default; run
+    with --read-only (or REMARKABLE_READ_ONLY=1) to expose a read-only server.
+    </instructions>
+    <examples>
+    - remarkable_status()
+    </examples>
+    """
+    import os
+
+    from remarkable_mcp.core.write_tools import write_enabled
+    from remarkable_mcp.transports.api import (
+        REMARKABLE_USE_LOCAL_DIR,
+        REMARKABLE_USE_SSH,
+        REMARKABLE_USE_USB_WEB,
+        get_active_transport,
+    )
+
+    # Determine the *selected* transport from configuration (pre-fallback).
+    if REMARKABLE_USE_LOCAL_DIR:
+        from remarkable_mcp.transports.local_dir import find_default_local_dir
+
+        selected_transport = "local-dir"
+        local_dir = os.environ.get("REMARKABLE_LOCAL_DIR") or str(
+            find_default_local_dir() or "(no directory found)"
+        )
+        connection_info = f"local directory at {local_dir}"
+    elif REMARKABLE_USE_USB_WEB:
+        from remarkable_mcp.transports.usb_web import DEFAULT_USB_HOST
+
+        selected_transport = "usb-web"
+        usb_host = os.environ.get("REMARKABLE_USB_HOST", DEFAULT_USB_HOST)
+        connection_info = f"USB web interface at {usb_host}"
+    elif REMARKABLE_USE_SSH:
+        from remarkable_mcp.transports.ssh import (
+            DEFAULT_SSH_HOST,
+            DEFAULT_SSH_PORT,
+            DEFAULT_SSH_USER,
+        )
+
+        selected_transport = "ssh"
+        ssh_host = os.environ.get("REMARKABLE_SSH_HOST", DEFAULT_SSH_HOST)
+        ssh_user = os.environ.get("REMARKABLE_SSH_USER", DEFAULT_SSH_USER)
+        ssh_port = int(os.environ.get("REMARKABLE_SSH_PORT", str(DEFAULT_SSH_PORT)))
+        connection_info = f"SSH to {ssh_user}@{ssh_host}:{ssh_port}"
+    else:
+        selected_transport = "cloud"
+        connection_info = "environment variable" if REMARKABLE_TOKEN else "file (~/.rmapi)"
+
+    # What each transport is capable of (independent of read-only mode).
+    # Read/render/export are always available; the remaining booleans are writes.
+    capability_matrix = {
+        "cloud": {
+            "read": True,
+            "render": True,
+            "export": True,
+            "upload": True,
+            "mkdir": True,
+            "move": True,
+            "rename": True,
+            "delete": True,
+        },
+        "ssh": {
+            "read": True,
+            "render": True,
+            "export": True,
+            "upload": True,
+            "mkdir": True,
+            "move": True,
+            "rename": True,
+            "delete": True,
+        },
+        "usb-web": {
+            "read": True,
+            "render": True,
+            "export": True,
+            "upload": True,
+            "mkdir": False,
+            "move": False,
+            "rename": False,
+            "delete": False,
+        },
+        # Local directory is strictly read-only: the folder is the desktop
+        # app's private sync cache, so direct writes would bypass sync.
+        "local-dir": {
+            "read": True,
+            "render": True,
+            "export": True,
+            "upload": False,
+            "mkdir": False,
+            "move": False,
+            "rename": False,
+            "delete": False,
+        },
+    }
+    writes_on = write_enabled()
+    transport = selected_transport
+
+    try:
+        client = await run_blocking(get_rmapi)
+        # Reflect any startup fallback to cloud (device unreachable + token set).
+        transport = get_active_transport()
+        fell_back = transport != selected_transport
+        if fell_back:
+            connection_info = (
+                f"cloud (fell back from {selected_transport}: transport unavailable, "
+                "cloud token configured)"
+            )
+
+        collection = await run_blocking(client.get_meta_items)
+        items_by_id = get_items_by_id(collection)
+
+        root = _get_root_path()
+
+        # Count documents (not folders, filtered by root)
+        doc_count = 0
+        for item in collection:
+            if item.is_folder:
+                continue
+            item_path = get_item_path(item, items_by_id)
+            if _is_within_root(item_path, root):
+                doc_count += 1
+
+        # Effective capabilities for the active transport: write ops only count
+        # when not in read-only mode.
+        transport_caps = capability_matrix[transport]
+        effective_caps = {
+            cap: (supported if cap in ("read", "render", "export") else supported and writes_on)
+            for cap, supported in transport_caps.items()
+        }
+
+        result = {
+            "authenticated": True,
+            "transport": transport,
+            "connection": connection_info,
+            "status": "connected",
+            "document_count": doc_count,
+            "write_enabled": writes_on,
+            "capabilities": effective_caps,
+            "capabilities_by_transport": capability_matrix,
+        }
+        reliability_status = getattr(type(client), "reliability_status", None)
+        if callable(reliability_status):
+            result["reliability"] = reliability_status(client)
+        if fell_back:
+            result["fell_back_to_cloud"] = True
+
+        # Add root path info if configured
+        if root != "/":
+            result["root_path"] = root
+
+        hint_parts = [f"Connected successfully via {transport}. Found {doc_count} documents."]
+        hint_parts.append(
+            "Single-document PDF/Markdown export is available and does not modify the tablet."
+        )
+        if fell_back:
+            hint_parts.append(
+                f"Note: {selected_transport} was selected but unavailable, so it "
+                "fell back to cloud (a cloud token is configured). Set "
+                "REMARKABLE_DISABLE_CLOUD_FALLBACK=1 to disable this."
+            )
+        if root != "/":
+            hint_parts.append(f"Filtered to root: {root}")
+        if writes_on:
+            if transport == "usb-web":
+                hint_parts.append(
+                    "Write is enabled, but the USB web interface only supports upload "
+                    "(to root). For mkdir/move/rename/delete over USB, use SSH mode."
+                )
+            else:
+                hint_parts.append(
+                    "Write is enabled: upload, mkdir, move, rename, and delete are available."
+                )
+        elif selected_transport == "local-dir":
+            hint_parts.append(
+                "Write tools are disabled because the local-directory transport "
+                "is strictly read-only."
+            )
+        else:
+            hint_parts.append(
+                "Read-only mode is active (--read-only / REMARKABLE_READ_ONLY=1). "
+                "Restart without it to enable write tools."
+            )
+        hint_parts.append(
+            "Use remarkable_browse() to see your files, "
+            "or remarkable_recent() for recent documents."
+        )
+
+        return make_response(result, " ".join(hint_parts))
+
+    except Exception as e:
+        error_msg = str(e)
+        # Reflect fallback in the reported transport when one occurred.
+        transport = get_active_transport()
+
+        result = {
+            "authenticated": False,
+            "transport": transport,
+            "connection": connection_info,
+            "error": error_msg,
+            "write_enabled": writes_on,
+            "capabilities_by_transport": capability_matrix,
+        }
+
+        if transport == "ssh":
+            hint = (
+                "SSH connection failed. Make sure:\n"
+                "1) Developer mode / SSH is enabled on your tablet\n"
+                "2) Your reMarkable is connected (USB or same network)\n"
+                "3) You can run: ssh root@10.11.99.1\n\n"
+                "See: https://remarkable.guide/guide/access/ssh.html\n\n"
+                "Or use cloud mode instead (remove --ssh flag) — no device needed."
+            )
+        elif transport == "usb-web":
+            hint = (
+                "USB web interface not reachable. Make sure:\n"
+                "1) Your reMarkable is connected via USB\n"
+                "2) USB web interface is enabled (Settings → Storage)\n"
+                "3) The device is on and unlocked"
+            )
+        elif transport == "local-dir":
+            hint = (
+                "Local data directory not usable. Make sure:\n"
+                "1) The reMarkable desktop app is installed and signed in "
+                "(it creates and syncs the folder), or\n"
+                "2) REMARKABLE_LOCAL_DIR points to a directory containing "
+                "xochitl-style data (*.metadata files)\n"
+                "Keep the desktop app running so the folder stays in sync."
+            )
+        else:
+            hint = (
+                "Cloud authentication failed. To connect:\n"
+                "1) Go to https://my.remarkable.com/device/browser/connect\n"
+                "2) Get a one-time code\n"
+                "3) Run: uvx remarkable-mcp --register YOUR_CODE\n"
+                "Cloud mode works from anywhere — no device required. SSH/USB modes "
+                "are also available for local access (add --ssh or --usb)."
+            )
+
+        return make_response(result, hint)
+
+
+async def _render_png_page(
+    client,
+    target_doc,
+    tmp_path: Path,
+    page: int,
+    background: str,
+    render_merged: bool,
+    allow_pdf_fallback: bool,
+) -> tuple[Optional[bytes], Optional[str], bool, bool]:
+    """Render a PNG with the same fallbacks used by remarkable_image."""
+    merged_note = None
+    is_merged = False
+    if render_merged:
+        png_data, merged_note = await run_blocking(
+            render_merged_page_from_document_zip,
+            tmp_path,
+            page,
+            background_color=background,
+        )
+        is_merged = png_data is not None and merged_note is None
+    else:
+        png_data = await run_blocking(
+            render_page_from_document_zip,
+            tmp_path,
+            page,
+            background_color=background,
+        )
+
+    rendered_via_pdf = False
+    if png_data is None and allow_pdf_fallback:
+        png_data, has_source_pdf = await run_blocking(
+            render_mapped_pdf_page_from_document_zip, tmp_path, page
+        )
+        rendered_via_pdf = png_data is not None
+        if png_data is None and not has_source_pdf:
+            pdf_bytes = await run_blocking(download_raw_file, client, target_doc, "pdf")
+            if pdf_bytes:
+                png_data = await run_blocking(render_tablet_pdf_page_to_png, pdf_bytes, page)
+                rendered_via_pdf = png_data is not None
+
+    if png_data is None:
+        full = await run_blocking(
+            render_page_full_page_from_document_zip,
+            tmp_path,
+            page,
+            background_color=background,
+        )
+        if full is not None:
+            png_data = full[0]
+
+    return png_data, merged_note, is_merged, rendered_via_pdf
+
+
+@mcp.tool(annotations=IMAGE_ANNOTATIONS)
+async def remarkable_image(
+    document: str,
+    page: int = 1,
+    background: Optional[str] = None,
+    output_format: str = "png",
+    compatibility: bool = False,
+    include_ocr: bool = False,
+    render_merged: Optional[bool] = None,
+):
+    """
+    <usecase>Get an image of a specific page from a reMarkable document.</usecase>
+    <instructions>
+    Renders a notebook or document page as an image (PNG or SVG). This is useful for:
+    - Viewing hand-drawn diagrams, sketches, or UI mockups
+    - Getting visual context that text extraction might miss
+    - Implementing designs based on hand-drawn wireframes
+    - SVG format for scalable vector graphics that can be edited
+
+    ## Merged PDF + Annotation Rendering
+
+    PNG pages backed by an imported PDF automatically composite the PDF page with
+    its reMarkable annotations. Set render_merged=False for an annotation-only
+    render, or True to explicitly request compositing. SVG remains annotation-only.
+
+    ## Response Formats
+
+    By default, images are returned as embedded resources (EmbeddedResource) which
+    include the full image data inline:
+    - PNG: Returned as BlobResourceContents with base64-encoded data
+    - SVG: Returned as TextResourceContents with SVG markup
+
+    If your client doesn't support embedded resources in tool responses, set
+    compatibility=True to receive a JSON response with just the resource URI.
+    The client can then fetch the resource separately.
+
+    Optionally, enable include_ocr=True to extract text from the image using OCR.
+    Google Vision is used when configured; otherwise OCR runs locally with Tesseract.
+
+    Note: Native notebooks retain their existing stroke rendering behavior.
+    If older USB firmware returns only a native PDF export, PNG remains
+    available; SVG and explicit annotation-only rendering require an rmdoc
+    archive and return a clear error when it is unavailable.
+    </instructions>
+    <parameters>
+    - document: Document name or path (use remarkable_browse to find documents)
+    - page: Page number (default: 1, 1-indexed)
+    - background: Background color as hex code. Supports RGB (#RRGGBB) or RGBA (#RRGGBBAA).
+      Default is "#FBFBFB" (reMarkable paper color), or set REMARKABLE_BACKGROUND_COLOR
+      env var to override. Use "#00000000" for transparent.
+    - output_format: Output format - "png" (default) or "svg" for vector graphics
+    - compatibility: If True, return resource URI in JSON instead of embedded resource.
+      Use this if your client doesn't support embedded resources in tool responses.
+    - include_ocr: Enable OCR text extraction from the image (default: False).
+    - render_merged: PDF compositing mode for PNG: None (default) automatically
+      merges PDF-backed pages, True explicitly requests merging, and False returns
+      the annotation-only layer. SVG output remains annotation-only.
+    </parameters>
+    <examples>
+    - remarkable_image("UI Mockup")  # Get first page as embedded PNG resource
+    - remarkable_image("Meeting Notes", page=2)  # Get second page
+    - remarkable_image("/Work/Designs/Wireframe", background="#FFFFFF")  # White background
+    - remarkable_image("Sketch", background="#00000000")  # Transparent background
+    - remarkable_image("Diagram", output_format="svg")  # Get as embedded SVG resource
+    - remarkable_image("Notes", compatibility=True)  # Return resource URI for retry
+    - remarkable_image("Notes", include_ocr=True)  # Get image with OCR text extraction
+    - remarkable_image("Annotated PDF")  # PDF + annotations composited automatically
+    - remarkable_image("Annotated PDF", render_merged=False)  # Annotation layer only
+    </examples>
+    """
+    try:
+        # Resolve background color: use provided value or get from env/default
+        if background is None:
+            background = await run_blocking(get_background_color)
+
+        client = await run_blocking(get_rmapi)
+        collection = await run_blocking(client.get_meta_items)
+        items_by_id = get_items_by_id(collection)
+
+        root = _get_root_path()
+        documents = [
+            item for item in collection if not item.is_folder and not _is_cloud_archived(item)
+        ]
+        target_doc = _find_target_document(collection, items_by_id, document)
+
+        if not target_doc:
+            # Find similar documents for suggestion (only within root)
+            filtered_docs = [
+                doc for doc in documents if _is_within_root(get_item_path(doc, items_by_id), root)
+            ]
+            similar = find_similar_documents(document, filtered_docs)
+            search_term = document.split()[0] if document else "notes"
+            return make_error(
+                error_type="document_not_found",
+                message=f"Document not found: '{document}'",
+                suggestion=(
+                    f"Try remarkable_browse(query='{search_term}') to search, "
+                    "or remarkable_browse('/') to list all files."
+                ),
+                did_you_mean=similar if similar else None,
+            )
+
+        format_lower = output_format.lower()
+        if format_lower not in ("png", "svg"):
+            return make_error(
+                error_type="invalid_format",
+                message=f"Invalid format: '{output_format}'. Supported formats: png, svg",
+                suggestion="Use output_format='png' for raster or 'svg' for vectors.",
+            )
+
+        raw_doc = await run_blocking(client.download, target_doc)
+        native_pdf = raw_doc if _is_pdf_payload(raw_doc) else None
+        tmp_path: Optional[Path] = None
+        if native_pdf is None:
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                tmp.write(raw_doc)
+                tmp_path = Path(tmp.name)
+
+        try:
+            if native_pdf is not None:
+                total_pages = await run_blocking(_count_pdf_pages, native_pdf)
+                file_type = "pdf"
+            else:
+                total_pages = await run_blocking(get_document_page_count, tmp_path)
+                file_type = await run_blocking(get_document_file_type, tmp_path)
+                if not file_type:
+                    file_type = await run_blocking(get_file_type, client, target_doc)
+            use_merged = render_merged is True or (render_merged is None and file_type == "pdf")
+
+            if total_pages == 0:
+                return make_error(
+                    error_type="no_pages",
+                    message=f"Document '{target_doc.VissibleName}' has no renderable pages.",
+                    suggestion=(
+                        "This may be a PDF/EPUB without annotations. "
+                        "Use remarkable_read() to extract text content instead."
+                    ),
+                )
+
+            if page < 1 or page > total_pages:
+                return make_error(
+                    error_type="page_out_of_range",
+                    message=f"Page {page} does not exist. Document has {total_pages} page(s).",
+                    suggestion=f"Use page=1 to {total_pages} to view different pages.",
+                )
+
+            # Build resource URI for this page
+            doc_path = _apply_root_filter(get_item_path(target_doc, items_by_id))
+            uri_path = doc_path.lstrip("/")
+
+            # Render the page based on format
+            merged_note = None
+            is_merged = False
+
+            if format_lower == "svg":
+                if native_pdf is not None:
+                    return make_error(
+                        error_type="svg_not_available",
+                        message=(
+                            "SVG output is unavailable because this transport returned "
+                            "a native PDF instead of a document archive."
+                        ),
+                        suggestion="Retry with output_format='png'.",
+                    )
+                if render_merged is True:
+                    merged_note = (
+                        "render_merged is only supported with PNG format; "
+                        "returning annotation-only SVG."
+                    )
+
+                svg_content = await run_blocking(
+                    render_page_from_document_zip_svg,
+                    tmp_path,
+                    page,
+                    background_color=background,
+                )
+
+                if svg_content is None:
+                    return make_error(
+                        error_type="render_failed",
+                        message="Failed to render page to SVG.",
+                        suggestion=(
+                            "SVG output requires local stroke parsing, so the "
+                            "page may be empty or in a newer format. Try "
+                            "output_format='png', which falls back to the "
+                            "tablet's native PDF export in USB/SSH mode, or "
+                            "remarkable_read() to extract text instead."
+                        ),
+                    )
+
+                resource_uri = f"remarkablesvg:///{uri_path}.page-{page}.svg"
+
+                if compatibility:
+                    # Return SVG content in JSON for clients without embedded resource support
+                    hint = (
+                        f"Page {page}/{total_pages} as SVG. "
+                        f"Use compatibility=False for embedded resource format."
+                    )
+                    if merged_note:
+                        hint = f"{merged_note} {hint}"
+                    response_data = {
+                        "svg": svg_content,
+                        "mime_type": "image/svg+xml",
+                        "page": page,
+                        "total_pages": total_pages,
+                        "resource_uri": resource_uri,
+                        "merged": False,
+                    }
+                    return make_response(response_data, hint)
+                else:
+                    # Return SVG as embedded TextResourceContents with info hint
+                    text_resource = TextResourceContents(
+                        uri=resource_uri,
+                        mime_type="image/svg+xml",
+                        text=svg_content,
+                    )
+                    embedded = EmbeddedResource(type="resource", resource=text_resource)
+                    info_text = (
+                        f"Page {page}/{total_pages} of '{target_doc.VissibleName}' as SVG. "
+                        f"Resource URI: {resource_uri}"
+                    )
+                    if merged_note:
+                        info_text = f"{merged_note}\n{info_text}"
+                    info = TextContent(type="text", text=info_text)
+                    return [info, embedded]
+            else:
+                if native_pdf is not None and render_merged is False:
+                    return make_error(
+                        error_type="annotation_only_not_available",
+                        message=(
+                            "Annotation-only rendering is unavailable because this "
+                            "transport returned a native PDF instead of a document archive."
+                        ),
+                        suggestion=(
+                            "Use the default PNG render, or connect through cloud/SSH or "
+                            "newer USB firmware that supports rmdoc."
+                        ),
+                    )
+                if native_pdf is not None:
+                    png_data = await run_blocking(
+                        render_tablet_pdf_page_to_png,
+                        native_pdf,
+                        page,
+                    )
+                    rendered_via_pdf = png_data is not None
+                else:
+                    (
+                        png_data,
+                        merged_note,
+                        is_merged,
+                        rendered_via_pdf,
+                    ) = await _render_png_page(
+                        client,
+                        target_doc,
+                        tmp_path,
+                        page,
+                        background,
+                        use_merged,
+                        render_merged is not False,
+                    )
+
+                if png_data is None:
+                    return make_error(
+                        error_type="render_failed",
+                        message="Failed to render page to image.",
+                        suggestion=(
+                            "Local stroke parsing and PyMuPDF SVG rasterization both "
+                            "failed. Reinstall remarkable-mcp to restore its Python "
+                            "dependencies. For PDF-backed documents the source PDF is "
+                            "used automatically as a fallback; otherwise try "
+                            "remarkable_read() to extract text instead."
+                        ),
+                    )
+
+                # Handle OCR if requested - extract text from the image
+                ocr_text = None
+                ocr_backend_used = None
+                if include_ocr:
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as ocr_tmp:
+                        ocr_tmp.write(png_data)
+                        ocr_tmp_path = Path(ocr_tmp.name)
+                    try:
+                        backend = get_ocr_backend()
+                        use_google = backend == "google" or (
+                            backend == "auto" and os.environ.get("GOOGLE_VISION_API_KEY")
+                        )
+                        if use_google:
+                            ocr_text = await run_blocking(_ocr_png_google_vision, ocr_tmp_path)
+                            if ocr_text:
+                                ocr_backend_used = "google"
+                        if ocr_text is None:
+                            ocr_text = await run_blocking(_ocr_png_tesseract, ocr_tmp_path)
+                            if ocr_text:
+                                ocr_backend_used = "tesseract"
+                    finally:
+                        ocr_tmp_path.unlink(missing_ok=True)
+
+                uri_suffix = ".merged.png" if is_merged else ".png"
+                resource_uri = f"remarkableimg:///{uri_path}.page-{page}{uri_suffix}"
+                png_base64 = base64.b64encode(png_data).decode("utf-8")
+
+                # Build OCR info for response if OCR was requested
+                ocr_info = {}
+                if include_ocr:
+                    ocr_info["ocr_text"] = ocr_text
+                    ocr_info["ocr_backend"] = ocr_backend_used
+                    if ocr_text is None:
+                        ocr_info["ocr_message"] = "No text detected in image"
+
+                if compatibility:
+                    # Return base64 PNG in JSON for clients without embedded resource support
+                    # Include data URI format for direct use in HTML <img> tags
+                    data_uri = f"data:image/png;base64,{png_base64}"
+                    hint = (
+                        f"Page {page}/{total_pages} as base64-encoded PNG. "
+                        f"Use 'data_uri' directly in HTML img src. "
+                        f"Use compatibility=False for embedded resource format."
+                    )
+                    if include_ocr and ocr_text:
+                        hint = (
+                            f"Page {page}/{total_pages} with OCR text "
+                            f"(backend: {ocr_backend_used})."
+                        )
+                    elif include_ocr:
+                        hint = f"Page {page}/{total_pages}. No text detected via OCR."
+                    if merged_note:
+                        hint = f"{merged_note} {hint}"
+                    elif is_merged:
+                        hint = f"Rendered with PDF + annotation compositing. {hint}"
+                    if rendered_via_pdf:
+                        hint = (
+                            "Rendered via the tablet's native PDF export "
+                            "(local stroke render unavailable). " + hint
+                        )
+
+                    response_data = {
+                        "data_uri": data_uri,
+                        "image_base64": png_base64,
+                        "mime_type": "image/png",
+                        "page": page,
+                        "total_pages": total_pages,
+                        "resource_uri": resource_uri,
+                        "merged": is_merged,
+                        "render_source": "tablet_pdf" if rendered_via_pdf else "strokes",
+                        **ocr_info,
+                    }
+                    return make_response(response_data, hint)
+                else:
+                    # Return PNG as embedded BlobResourceContents with info hint
+                    blob_resource = BlobResourceContents(
+                        uri=resource_uri,
+                        mime_type="image/png",
+                        blob=png_base64,
+                    )
+                    embedded = EmbeddedResource(type="resource", resource=blob_resource)
+
+                    info_text = f"Page {page}/{total_pages} of '{target_doc.VissibleName}' as PNG. "
+                    info_text += f"Resource URI: {resource_uri}"
+                    if is_merged:
+                        info_text += "\nRendered with PDF + annotation compositing."
+                    if rendered_via_pdf:
+                        info_text += (
+                            "\nRendered via the tablet's native PDF export "
+                            "(local stroke render unavailable)."
+                        )
+                    if merged_note:
+                        info_text += f"\nNote: {merged_note}"
+                    if include_ocr and ocr_text:
+                        info_text += f"\n\nOCR Text (via {ocr_backend_used}):\n{ocr_text}"
+                    elif include_ocr:
+                        info_text += "\n\nOCR: No text detected in image."
+
+                    info = TextContent(type="text", text=info_text)
+                    return [info, embedded]
+
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+
+    except Exception as e:
+        return make_error(
+            error_type="image_failed",
+            message=str(e),
+            suggestion="Check remarkable_status() to verify your connection.",
+        )
+
+
+@dataclass(frozen=True)
+class _DocumentExportResult:
+    build: ExportBuildResult
+    metadata: ExportMetadata
+    representation: str
+    pdf_mode: PdfMode | None = None
+
+
+class _ExportRequestError(Exception):
+    def __init__(self, error_type: str, message: str, suggestion: str):
+        super().__init__(message)
+        self.error_type = error_type
+        self.message = message
+        self.suggestion = suggestion
+
+
+def _extract_source_text_from_bytes(data: bytes, source_type: str) -> str:
+    suffix = f".{source_type}"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(data)
+        path = Path(tmp.name)
+    try:
+        if source_type == "pdf":
+            return extract_text_from_pdf(path)
+        if source_type == "epub":
+            return extract_text_from_epub(path)
+        raise ValueError(f"Unsupported source type: {source_type}")
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _publish_document_export(
+    client,
+    target_doc,
+    metadata: ExportMetadata,
+    *,
+    output_format: Literal["pdf", "markdown"],
+    pdf_mode: PdfMode,
+    include_ocr: bool,
+    background_color: str,
+) -> PublishedExport[_DocumentExportResult]:
+    """Download, build, and publish one export without touching tablet state."""
+
+    def writer(destination: Path) -> _DocumentExportResult:
+        raw_doc = client.download(target_doc)
+        if not raw_doc:
+            raise _ExportRequestError(
+                "document_download_failed",
+                "The transport returned an empty document payload.",
+                "Retry the export or use remarkable_status() to check the connection.",
+            )
+
+        if _is_pdf_payload(raw_doc):
+            page_count = _count_pdf_pages(raw_doc)
+            resolved = replace(metadata, page_count=page_count)
+            if output_format == "pdf":
+                if pdf_mode == "annotations":
+                    raise _ExportRequestError(
+                        "annotation_only_not_available",
+                        (
+                            "Annotation-only PDF export is unavailable because this "
+                            "transport returned a flattened native PDF."
+                        ),
+                        (
+                            "Use pdf_mode='merged', or connect through cloud/SSH, local-dir, "
+                            "or newer USB firmware that exposes an rmdoc archive."
+                        ),
+                    )
+                build = write_native_pdf_export(raw_doc, destination, resolved)
+                return _DocumentExportResult(
+                    build=build,
+                    metadata=resolved,
+                    representation="tablet_pdf",
+                    pdf_mode=pdf_mode,
+                )
+
+            source_text = _extract_source_text_from_bytes(raw_doc, "pdf")
+            warnings = [
+                (
+                    "This transport returned a flattened native PDF. Source/visible text "
+                    "was preserved, but separate typed, annotation, highlight, and OCR "
+                    "layers were unavailable."
+                )
+            ]
+            build = write_markdown_export(
+                destination,
+                resolved,
+                source_text=source_text,
+                extraction=None,
+                include_ocr=include_ocr,
+                warnings=warnings,
+            )
+            return _DocumentExportResult(
+                build=build,
+                metadata=resolved,
+                representation="tablet_pdf",
+            )
+
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+            tmp.write(raw_doc)
+            archive_path = Path(tmp.name)
+
+        try:
+            try:
+                page_count = get_document_page_count(archive_path)
+                archive_type = get_document_file_type(archive_path) or metadata.source_type
+            except Exception as exc:
+                raise _ExportRequestError(
+                    "invalid_document_archive",
+                    f"The downloaded document archive could not be read: {exc}",
+                    "Retry the export. If it persists, try another transport.",
+                ) from exc
+
+            resolved = replace(
+                metadata,
+                source_type=archive_type or "notebook",
+                page_count=page_count if page_count > 0 else None,
+            )
+
+            if output_format == "pdf":
+                # USB web can expose a firmware-rendered PDF for notebooks and
+                # EPUBs. Prefer it in merged mode because it includes source
+                # underlays that the local archive cannot reconstruct.
+                if pdf_mode == "merged" and resolved.source_type != "pdf":
+                    native_pdf = download_raw_file(client, target_doc, "pdf")
+                    if _is_pdf_payload(native_pdf):
+                        native_pages = _count_pdf_pages(native_pdf)
+                        native_metadata = replace(resolved, page_count=native_pages)
+                        build = write_native_pdf_export(native_pdf, destination, native_metadata)
+                        return _DocumentExportResult(
+                            build=build,
+                            metadata=native_metadata,
+                            representation="tablet_pdf",
+                            pdf_mode=pdf_mode,
+                        )
+
+                if resolved.page_count is None and resolved.source_type == "pdf":
+                    source_pdf = download_raw_file(client, target_doc, "pdf")
+                    if _is_pdf_payload(source_pdf):
+                        resolved = replace(resolved, page_count=_count_pdf_pages(source_pdf))
+
+                if resolved.page_count is None:
+                    raise _ExportRequestError(
+                        "page_count_unavailable",
+                        "The physical page count could not be determined for this document.",
+                        (
+                            "Retry with another transport. PDF export cannot preserve page "
+                            "order safely without a physical page count."
+                        ),
+                    )
+
+                build = write_archive_pdf_export(
+                    archive_path,
+                    destination,
+                    resolved,
+                    pdf_mode=pdf_mode,
+                    background_color=background_color,
+                )
+                return _DocumentExportResult(
+                    build=build,
+                    metadata=resolved,
+                    representation="document_archive",
+                    pdf_mode=pdf_mode,
+                )
+
+            warnings: list[str] = []
+            extraction = None
+            try:
+                extraction = extract_text_from_document_zip(
+                    archive_path,
+                    include_ocr=include_ocr,
+                    doc_id=resolved.document_id,
+                )
+                if resolved.page_count is None:
+                    extracted_pages = int(extraction.get("pages") or 0)
+                    if extracted_pages > 0:
+                        resolved = replace(resolved, page_count=extracted_pages)
+            except Exception as exc:
+                warnings.append(f"Annotation extraction failed: {exc}")
+
+            source_text = None
+            if resolved.source_type in ("pdf", "epub"):
+                source_data = download_raw_file(client, target_doc, resolved.source_type)
+                if source_data:
+                    try:
+                        source_text = _extract_source_text_from_bytes(
+                            source_data,
+                            resolved.source_type,
+                        )
+                    except Exception as exc:
+                        warnings.append(
+                            f"{resolved.source_type.upper()} source text extraction failed: {exc}"
+                        )
+                else:
+                    warnings.append(
+                        f"Original {resolved.source_type.upper()} source data was unavailable."
+                    )
+
+            if extraction is None and source_text is None:
+                raise _ExportRequestError(
+                    "no_exportable_content",
+                    "Neither source text nor annotation content could be extracted.",
+                    "Retry with another transport or verify the document opens on the tablet.",
+                )
+
+            build = write_markdown_export(
+                destination,
+                resolved,
+                source_text=source_text,
+                extraction=extraction,
+                include_ocr=include_ocr,
+                warnings=warnings,
+            )
+            return _DocumentExportResult(
+                build=build,
+                metadata=resolved,
+                representation="document_archive",
+            )
+        finally:
+            archive_path.unlink(missing_ok=True)
+
+    extension = "pdf" if output_format == "pdf" else "md"
+    source_name = metadata.title
+    for source_suffix in (".pdf", ".epub"):
+        if source_name.lower().endswith(source_suffix):
+            source_name = source_name[: -len(source_suffix)]
+            break
+    return export_store.publish(
+        filename=f"{source_name}.{extension}",
+        output_format=output_format,
+        writer=writer,
+    )
+
+
+@mcp.tool(annotations=EXPORT_ANNOTATIONS)
+async def remarkable_export(
+    document: str,
+    output_format: Literal["pdf", "markdown"] = "pdf",
+    pdf_mode: Literal["merged", "annotations"] = "merged",
+    include_ocr: bool = False,
+):
+    """
+    <usecase>Export one reMarkable document as a reusable PDF or Markdown file.</usecase>
+    <instructions>
+    Exports a single document without modifying the tablet or its library.
+
+    The generated file is written to a server-managed temporary directory and
+    returned as an MCP ResourceLink. The tool response stays small: it never embeds
+    the PDF/Markdown as base64 and never writes to an arbitrary host path. The
+    resource expires after 15 minutes and may be evicted earlier when more than
+    eight exports are retained. Fetch and save the linked resource for durable use.
+
+    PDF behavior:
+    - `pdf_mode="merged"` (default) preserves complete physical pages, combining
+      mapped PDF underlays and reMarkable annotations.
+    - `pdf_mode="annotations"` exports full-page annotation layers only when the
+      transport provides a document archive.
+    - Pages remain in physical device order. A render failure produces a labeled
+      placeholder at that ordinal and a partial-export warning; pages are not skipped.
+
+    Markdown behavior:
+    - Preserves basic source metadata and fixed source text, typed text, annotation,
+      highlight, and OCR sections.
+    - OCR is opt-in and uses the same configured/cached OCR path as remarkable_read.
+    - Extracted text is kept verbatim; the exporter does not invent headings, lists,
+      links, or page attribution it cannot prove.
+    </instructions>
+    <parameters>
+    - document: Document name or path (use remarkable_browse to find documents).
+    - output_format: "pdf" (default) or "markdown".
+    - pdf_mode: PDF-only mode, "merged" (default) or "annotations".
+    - include_ocr: Enable existing handwriting OCR for Markdown (default: False).
+    </parameters>
+    <examples>
+    - remarkable_export("Meeting Notes")
+    - remarkable_export("Research Paper", output_format="pdf", pdf_mode="annotations")
+    - remarkable_export("Journal", output_format="markdown", include_ocr=True)
+    </examples>
+    """
+    if output_format == "markdown" and pdf_mode != "merged":
+        return make_error(
+            error_type="invalid_export_options",
+            message="pdf_mode applies only to PDF exports.",
+            suggestion="Use pdf_mode='merged' for Markdown, or choose output_format='pdf'.",
+        )
+    if output_format == "pdf" and include_ocr:
+        return make_error(
+            error_type="invalid_export_options",
+            message="include_ocr applies only to Markdown exports.",
+            suggestion="Set include_ocr=False, or choose output_format='markdown'.",
+        )
+
+    try:
+        client = await run_blocking(get_rmapi)
+        collection = await run_blocking(client.get_meta_items)
+        items_by_id = get_items_by_id(collection)
+        target_doc = _find_target_document(collection, items_by_id, document)
+        if target_doc is None:
+            root = _get_root_path()
+            candidates = [
+                item
+                for item in collection
+                if not item.is_folder
+                and not _is_cloud_archived(item)
+                and _is_within_root(get_item_path(item, items_by_id), root)
+            ]
+            similar = find_similar_documents(document, candidates)
+            return make_error(
+                error_type="document_not_found",
+                message=f"Document not found: '{document}'",
+                suggestion="Use remarkable_browse() to find the exact document name or path.",
+                did_you_mean=similar if similar else None,
+            )
+
+        full_path = get_item_path(target_doc, items_by_id)
+        display_path = _apply_root_filter(full_path)
+        source_type = await run_blocking(get_file_type, client, target_doc)
+        metadata = ExportMetadata(
+            document_id=target_doc.ID,
+            title=target_doc.VissibleName,
+            path=display_path,
+            source_type=source_type,
+            page_count=None,
+            modified=getattr(target_doc, "ModifiedClient", None),
+            tags=tuple(getattr(target_doc, "tags", None) or ()),
+        )
+        background = await run_blocking(get_background_color)
+        published = await run_blocking(
+            _publish_document_export,
+            client,
+            target_doc,
+            metadata,
+            output_format=output_format,
+            pdf_mode=pdf_mode,
+            include_ocr=include_ocr,
+            background_color=background,
+        )
+    except _ExportRequestError as exc:
+        return make_error(
+            error_type=exc.error_type,
+            message=exc.message,
+            suggestion=exc.suggestion,
+        )
+    except Exception as exc:
+        return make_error(
+            error_type="export_failed",
+            message=str(exc),
+            suggestion=(
+                "Retry the export, or use remarkable_status() to verify the active transport."
+            ),
+        )
+
+    resource = published.resource
+    result = published.result
+    build = result.build
+    response = {
+        "document": result.metadata.title,
+        "document_id": result.metadata.document_id,
+        "path": result.metadata.path,
+        "source_type": result.metadata.source_type,
+        "format": output_format,
+        "mime_type": resource.mime_type,
+        "filename": resource.filename,
+        "size": resource.size,
+        "pages": build.pages,
+        "status": build.status,
+        "failed_pages": list(build.failed_pages),
+        "warnings": list(build.warnings),
+        "representation": result.representation,
+        "resource_uri": resource.uri,
+        "expires_at": resource.expires_at,
+        "temporary_local_file": True,
+    }
+    if result.pdf_mode is not None:
+        response["pdf_mode"] = result.pdf_mode
+    if build.ocr_backend:
+        response["ocr_backend"] = build.ocr_backend
+
+    hint = (
+        f"Temporary {output_format.upper()} export ready as an MCP resource "
+        f"({resource.size} bytes). It expires at {resource.expires_at.isoformat()}; "
+        "fetch and save the resource for durable storage. The tablet was not modified."
+    )
+    if build.status == "partial":
+        hint = f"Partial export: {'; '.join(build.warnings) or 'some pages failed'}. {hint}"
+
+    info = TextContent(type="text", text=make_response(response, hint))
+    link = ResourceLink(
+        type="resource_link",
+        name=resource.filename,
+        title=f"{result.metadata.title} ({output_format.upper()} export)",
+        uri=resource.uri,
+        description=(
+            f"Temporary export of reMarkable document {result.metadata.document_id}; "
+            f"expires {resource.expires_at.isoformat()}."
+        ),
+        mime_type=resource.mime_type,
+        size=resource.size,
+        meta={
+            "documentId": result.metadata.document_id,
+            "documentPath": result.metadata.path,
+            "expiresAt": resource.expires_at.isoformat(),
+            "temporaryLocalFile": True,
+        },
+    )
+    return [info, link]

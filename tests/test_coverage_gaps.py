@@ -23,7 +23,7 @@ from test_workflows import (  # noqa: F401
 @pytest.fixture
 def by_name(monkeypatch):
     monkeypatch.setattr(
-        "remarkable_mcp.tools._find_target_document",
+        "remarkable_mcp.core.tools._find_target_document",
         lambda items, by_id, name: next((d for d in items if d.VissibleName == name), None),
     )
 
@@ -39,8 +39,8 @@ def _blank(cloud, name, pages=1):  # noqa: F811
 
 
 def test_live_analyse_annotations_on_a_pdf(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import live_tools
-    from remarkable_mcp.workflows.review_pdf import render_review_pdf
+    from remarkable_mcp.workflows.live import tools as live_tools
+    from remarkable_mcp.workflows.review.render import render_review_pdf
 
     r = render_review_pdf(DRAFT)
     doc = cloud.upload_document(r.pdf, "Draft", "pdf")
@@ -54,7 +54,7 @@ def test_live_analyse_annotations_on_a_pdf(cloud):  # noqa: F811
 
 
 def test_live_analyse_sketch_on_a_blank_page(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import live_tools
+    from remarkable_mcp.workflows.live import tools as live_tools
 
     doc = _blank(cloud, "Sketch")
     shapes = [
@@ -69,13 +69,14 @@ def test_live_analyse_sketch_on_a_blank_page(cloud):  # noqa: F811
 
 
 def test_live_analyse_unknown_document(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import live_tools
+    from remarkable_mcp.workflows.live import tools as live_tools
 
     assert live_tools._analyse("missing", ["p"], "auto", False) == ([], [])
 
 
 def test_live_status_reports_watcher_state(monkeypatch):
-    from remarkable_mcp.workflows import live, live_tools
+    from remarkable_mcp.workflows.live import tools as live_tools
+    from remarkable_mcp.workflows.live import watcher as live
 
     monkeypatch.setattr(live, "_shared", None)
     assert json.loads(asyncio.run(live_tools.remarkable_live_status()))["running"] is False
@@ -90,7 +91,7 @@ def test_live_status_reports_watcher_state(monkeypatch):
 
 
 def test_table_tool(cloud, by_name):  # noqa: F811
-    from remarkable_mcp.workflows import structure_tools as st
+    from remarkable_mcp.workflows.structure import tools as st
 
     doc = _blank(cloud, "Table")
     lines = []
@@ -108,7 +109,7 @@ def test_table_tool(cloud, by_name):  # noqa: F811
 
 
 def test_table_tool_without_a_table(cloud, by_name):  # noqa: F811
-    from remarkable_mcp.workflows import structure_tools as st
+    from remarkable_mcp.workflows.structure import tools as st
 
     doc = _blank(cloud, "Plain")
     cloud.annotate(doc.id, {0: [(p, FINELINER, 446.0) for p in _handwriting(40, 60, words=3)]})
@@ -116,7 +117,7 @@ def test_table_tool_without_a_table(cloud, by_name):  # noqa: F811
 
 
 def test_wireframe_tool_with_preview(cloud, by_name):  # noqa: F811
-    from remarkable_mcp.workflows import structure_tools as st
+    from remarkable_mcp.workflows.structure import tools as st
 
     doc = _blank(cloud, "Wire")
     strokes = [
@@ -141,7 +142,7 @@ def test_wireframe_tool_with_preview(cloud, by_name):  # noqa: F811
     ],
 )
 def test_structure_tool_errors(cloud, by_name, call, error):  # noqa: F811
-    from remarkable_mcp.workflows import structure_tools as st
+    from remarkable_mcp.workflows.structure import tools as st
 
     _blank(cloud, "Blank")
     assert _json_of(asyncio.run(call(st)))["_error"]["type"] == error
@@ -151,7 +152,8 @@ def test_structure_tool_errors(cloud, by_name, call, error):  # noqa: F811
 
 
 def test_autopilot_loop_checks_after_debounce_and_restarts_watcher(monkeypatch):
-    from remarkable_mcp.workflows import autopilot, live
+    from remarkable_mcp.workflows.live import autopilot
+    from remarkable_mcp.workflows.live import watcher as live
 
     runs = {"n": 0}
 
@@ -201,7 +203,7 @@ def test_autopilot_loop_checks_after_debounce_and_restarts_watcher(monkeypatch):
 
 
 def test_autopilot_once_cli(monkeypatch, capsys):
-    from remarkable_mcp.workflows import autopilot
+    from remarkable_mcp.workflows.live import autopilot
 
     async def fake_overview(self):
         return {"attention": [], "waiting": 1}
@@ -214,7 +216,7 @@ def test_autopilot_once_cli(monkeypatch, capsys):
 
 
 def test_autopilot_config_file(tmp_path, monkeypatch):
-    from remarkable_mcp.workflows import autopilot
+    from remarkable_mcp.workflows.live import autopilot
 
     cfg = tmp_path / "ap.json"
     cfg.write_text(json.dumps({"agent_timeout_seconds": 60, "debounce_seconds": 5}))
@@ -239,7 +241,7 @@ class _Resp:
 
 
 def test_google_backend_request_and_parse(monkeypatch):
-    from remarkable_mcp.workflows import handwriting
+    from remarkable_mcp.workflows.ink import handwriting
 
     monkeypatch.setenv("GOOGLE_VISION_API_KEY", "k")
     sent = {}
@@ -256,7 +258,7 @@ def test_google_backend_request_and_parse(monkeypatch):
 
 
 def test_claude_backend_request_and_parse(monkeypatch):
-    from remarkable_mcp.workflows import handwriting
+    from remarkable_mcp.workflows.ink import handwriting
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setenv("REMARKABLE_HANDWRITING_MODEL", "claude-haiku-4-5")
@@ -277,7 +279,7 @@ def test_claude_backend_request_and_parse(monkeypatch):
 
 
 def test_backend_errors_degrade_to_none(monkeypatch):
-    from remarkable_mcp.workflows import handwriting
+    from remarkable_mcp.workflows.ink import handwriting
 
     monkeypatch.setenv("GOOGLE_VISION_API_KEY", "k")
 
@@ -289,7 +291,7 @@ def test_backend_errors_degrade_to_none(monkeypatch):
 
 
 def test_math_mode_skips_plain_ocr_engines(monkeypatch):
-    from remarkable_mcp.workflows import handwriting
+    from remarkable_mcp.workflows.ink import handwriting
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert handwriting.transcribe(b"x", "google", mode="math") == (None, "none")
@@ -298,7 +300,7 @@ def test_math_mode_skips_plain_ocr_engines(monkeypatch):
 def test_transcribe_many_respects_the_deadline(monkeypatch):
     import time as _t
 
-    from remarkable_mcp.workflows import handwriting
+    from remarkable_mcp.workflows.ink import handwriting
 
     def slow(png, engine=None, strokes=None, mode="text"):
         _t.sleep(2)
@@ -385,7 +387,7 @@ def test_trmnl_push_validation(monkeypatch, tmp_path):
 
 def test_form_tools_need_cloud_for_sending(cloud, monkeypatch):  # noqa: F811
     from remarkable_mcp.workflows import cloud as cloud_mod
-    from remarkable_mcp.workflows import form_tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
 
     monkeypatch.setattr(cloud_mod, "is_cloud", lambda: False)
     err = _json_of(asyncio.run(form_tools.remarkable_ask("Q?")))
@@ -393,7 +395,7 @@ def test_form_tools_need_cloud_for_sending(cloud, monkeypatch):  # noqa: F811
 
 
 def test_form_read_when_document_deleted(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import form_tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
 
     sent = _json_of(asyncio.run(form_tools.remarkable_ask("Q?")))
     doc_id = form_tools._forms().get(sent["form"])["doc_id"]
@@ -405,8 +407,9 @@ def test_form_read_when_document_deleted(cloud):  # noqa: F811
 
 
 def test_clarify_on_a_plain_document_and_errors(cloud, by_name):  # noqa: F811
-    from remarkable_mcp.workflows import form_tools, tools
-    from remarkable_mcp.workflows.review_pdf import render_review_pdf
+    from remarkable_mcp.workflows import tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
+    from remarkable_mcp.workflows.review.render import render_review_pdf
 
     r = render_review_pdf(DRAFT)
     doc = cloud.upload_document(r.pdf, "Some PDF", "pdf")
@@ -430,7 +433,7 @@ def test_clarify_on_a_plain_document_and_errors(cloud, by_name):  # noqa: F811
 
 
 def test_inbox_setup_on_an_existing_notebook(cloud, by_name):  # noqa: F811
-    from remarkable_mcp.workflows import inbox_tools
+    from remarkable_mcp.workflows.inbox import tools as inbox_tools
 
     _blank(cloud, "My notebook")
     got = _json_of(
@@ -442,7 +445,7 @@ def test_inbox_setup_on_an_existing_notebook(cloud, by_name):  # noqa: F811
 
 
 def test_sketch_tool_errors_and_empty_page(cloud, by_name):  # noqa: F811
-    from remarkable_mcp.workflows import sketch_tools
+    from remarkable_mcp.workflows.structure import sketch_tools
 
     _blank(cloud, "Empty")
     assert (
@@ -464,7 +467,7 @@ def test_sketch_tool_errors_and_empty_page(cloud, by_name):  # noqa: F811
 
 
 def test_regions_page_out_of_range(cloud, by_name):  # noqa: F811
-    from remarkable_mcp.workflows import sketch_tools
+    from remarkable_mcp.workflows.structure import sketch_tools
 
     _blank(cloud, "Empty")
     assert (

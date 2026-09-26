@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from remarkable_mcp.workflows.ink import load_document_ink_from_zip
-from remarkable_mcp.workflows.latex_review import collect_tex_requests, synctex_edit
+from remarkable_mcp.workflows.ink.page import load_document_ink_from_zip
+from remarkable_mcp.workflows.review.latex import collect_tex_requests, synctex_edit
 from test_workflows import (  # noqa: F401
     FINELINER,
     _doc_zip,
@@ -83,7 +83,7 @@ def test_marks_resolve_to_tex_lines(tex):
 
 
 def test_latex_tools_round_trip(tex, cloud, monkeypatch, tmp_path):  # noqa: F811
-    from remarkable_mcp.workflows import latex_tools as t
+    from remarkable_mcp.workflows.review import latex_tools as t
 
     sent = _json_of(asyncio.run(t.remarkable_latex_review_send(str(tex / "main.pdf"), "Thesis")))
     doc = next(d for d in cloud.docs.values() if d.VissibleName == "Thesis")
@@ -97,7 +97,7 @@ def test_latex_tools_round_trip(tex, cloud, monkeypatch, tmp_path):  # noqa: F81
 
 
 def test_send_requires_synctex(tmp_path, cloud):  # noqa: F811
-    from remarkable_mcp.workflows import latex_tools as t
+    from remarkable_mcp.workflows.review import latex_tools as t
 
     pdf = tmp_path / "x.pdf"
     pdf.write_bytes(b"%PDF-1.4\n")
@@ -132,7 +132,7 @@ def test_cropbox_pdfs_map_correctly(tmp_path):
 
 
 def test_refine_prefers_the_synctex_line_and_whole_words():
-    from remarkable_mcp.workflows.latex_review import _refine
+    from remarkable_mcp.workflows.review.latex import _refine
 
     text = "the model is big\nremodelling the house\nour model works well\n"
     assert _refine(text, 3, "model") == 3  # SyncTeX's line already matches
@@ -141,7 +141,7 @@ def test_refine_prefers_the_synctex_line_and_whole_words():
 
 
 def test_collect_uses_the_compiled_sources(tex, cloud):  # noqa: F811
-    from remarkable_mcp.workflows import latex_tools as t
+    from remarkable_mcp.workflows.review import latex_tools as t
 
     sent = _json_of(asyncio.run(t.remarkable_latex_review_send(str(tex / "main.pdf"), "Snap")))
     original = (tex / "chapters" / "method.tex").read_text()
@@ -165,7 +165,7 @@ def test_collect_uses_the_compiled_sources(tex, cloud):  # noqa: F811
 
 
 def test_snapshot_includes_included_chapters(tmp_path):
-    from remarkable_mcp.workflows.latex_review import synctex_inputs
+    from remarkable_mcp.workflows.review.latex import synctex_inputs
 
     (tmp_path / "ch1.tex").write_text("Chapter one text.\n")
     (tmp_path / "ch2.tex").write_text("Chapter two text.\n")

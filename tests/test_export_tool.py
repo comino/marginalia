@@ -12,7 +12,7 @@ import fitz
 import pytest
 from mcp import types
 
-from remarkable_mcp.export_resources import export_store
+from remarkable_mcp.core.export_resources import export_store
 from remarkable_mcp.server import mcp
 
 
@@ -38,7 +38,7 @@ def _pdf_bytes(pages: int = 2) -> bytes:
 
 
 def _notebook_archive(doc_id: str = "doc-1", text: str = "Typed export content") -> bytes:
-    from remarkable_mcp import notebooks
+    from remarkable_mcp.documents import notebooks
 
     page_id = "page-1"
     output = io.BytesIO()
@@ -52,7 +52,7 @@ def _notebook_archive(doc_id: str = "doc-1", text: str = "Typed export content")
 
 
 def _annotated_pdf_archive(doc_id: str = "doc-1") -> bytes:
-    from remarkable_mcp import notebooks
+    from remarkable_mcp.documents import notebooks
 
     page_id = "page-1"
     output = io.BytesIO()
@@ -104,7 +104,7 @@ class TestExportToolContract:
 
     @pytest.mark.asyncio
     async def test_native_pdf_returns_small_resource_link_with_stable_identity(self):
-        import remarkable_mcp.tools as tool_module
+        import remarkable_mcp.core.tools as tool_module
 
         document = _document("Version 1.2 plan", "stable-pdf-id")
         client = Mock()
@@ -143,7 +143,7 @@ class TestExportToolContract:
 
     @pytest.mark.asyncio
     async def test_flattened_pdf_rejects_annotation_only_export(self):
-        import remarkable_mcp.tools as tool_module
+        import remarkable_mcp.core.tools as tool_module
 
         document = _document("Flattened PDF")
         client = Mock()
@@ -168,7 +168,7 @@ class TestExportToolContract:
 
     @pytest.mark.asyncio
     async def test_pdf_archive_merges_complete_page_by_default(self):
-        import remarkable_mcp.tools as tool_module
+        import remarkable_mcp.core.tools as tool_module
 
         document = _document("Annotated PDF", "annotated-id")
         client = Mock()
@@ -196,8 +196,8 @@ class TestExportToolContract:
 
     @pytest.mark.asyncio
     async def test_partial_page_diagnostics_are_returned_with_resource(self):
-        import remarkable_mcp.tools as tool_module
-        from remarkable_mcp.exporters import ExportBuildResult
+        import remarkable_mcp.core.tools as tool_module
+        from remarkable_mcp.documents.exporters import ExportBuildResult
 
         document = _document("Partial Notebook", "partial-id")
         client = Mock()
@@ -233,7 +233,7 @@ class TestExportToolContract:
 
     @pytest.mark.asyncio
     async def test_insert_image_failure_yields_one_placeholder_resource_page(self):
-        import remarkable_mcp.tools as tool_module
+        import remarkable_mcp.core.tools as tool_module
 
         document = _document("Insertion Failure", "insert-failure-id")
         client = Mock()
@@ -286,7 +286,7 @@ class TestExportToolContract:
 
     @pytest.mark.asyncio
     async def test_document_not_found_uses_standard_educational_error(self):
-        import remarkable_mcp.tools as tool_module
+        import remarkable_mcp.core.tools as tool_module
 
         client = Mock()
         client.get_meta_items.return_value = []
@@ -301,7 +301,7 @@ class TestExportToolContract:
 class TestExportTransportFixtures:
     @pytest.mark.asyncio
     async def test_local_dir_fixture_exports_markdown(self, tmp_path):
-        from remarkable_mcp.local_dir import LocalDirClient
+        from remarkable_mcp.transports.local_dir import LocalDirClient
 
         doc_id = "local-doc"
         page_id = "local-page"
@@ -325,12 +325,12 @@ class TestExportTransportFixtures:
         )
         page_dir = tmp_path / doc_id
         page_dir.mkdir()
-        from remarkable_mcp import notebooks
+        from remarkable_mcp.documents import notebooks
 
         (page_dir / f"{page_id}.rm").write_bytes(notebooks.page_rm_bytes("Local typed text"))
         client = LocalDirClient(tmp_path)
 
-        with patch("remarkable_mcp.tools.get_rmapi", return_value=client):
+        with patch("remarkable_mcp.core.tools.get_rmapi", return_value=client):
             result = await mcp.call_tool(
                 "remarkable_export",
                 {"document": "Local Notes", "output_format": "markdown"},
@@ -347,7 +347,7 @@ class TestExportTransportFixtures:
 
     @pytest.mark.asyncio
     async def test_content_addressed_cloud_fixture_exports_markdown(self):
-        from remarkable_mcp.sync import Document, RemarkableClient
+        from remarkable_mcp.transports.sync import Document, RemarkableClient
 
         doc_id = "cloud-doc"
         page_id = "page-1"
@@ -382,7 +382,7 @@ class TestExportTransportFixtures:
         client.get_meta_items = Mock(return_value=[document])
         client._get_file = Mock(side_effect=lambda blob_hash, _name: blobs[blob_hash])
 
-        with patch("remarkable_mcp.tools.get_rmapi", return_value=client):
+        with patch("remarkable_mcp.core.tools.get_rmapi", return_value=client):
             result = await mcp.call_tool(
                 "remarkable_export",
                 {"document": "Cloud Notes", "output_format": "markdown"},

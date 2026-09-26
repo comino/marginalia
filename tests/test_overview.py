@@ -7,7 +7,10 @@ from test_workflows import FINELINER, _fake_path, _hline, _json_of, cloud  # noq
 
 
 def test_whats_new_across_workflows(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import form_tools, inbox_tools, overview_tools, tools
+    from remarkable_mcp.workflows import overview as overview_tools
+    from remarkable_mcp.workflows import tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
+    from remarkable_mcp.workflows.inbox import tools as inbox_tools
 
     empty = _json_of(asyncio.run(overview_tools.remarkable_whats_new()))
     assert empty["tracked"] == 0

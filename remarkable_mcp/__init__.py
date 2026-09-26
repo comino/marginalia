@@ -5,7 +5,7 @@ An MCP server that provides access to reMarkable tablet data through the reMarka
 """
 
 # Capability checking utilities
-from remarkable_mcp.capabilities import (
+from remarkable_mcp.core.capabilities import (
     client_supports_elicitation,
     client_supports_experimental,
     client_supports_roots,

@@ -19,20 +19,32 @@ documents every workflow tool; `docs/core.md` the core tools.
   The distribution is `marginalia` (console scripts `marginalia`,
   `marginalia-autopilot`, plus the old `remarkable-*` aliases).
 
+## Layout
+
+- `remarkable_mcp/server.py` assembles the server; `cli.py` is the entry point.
+- `core/` the core tools (docs/core.md), resources and prompts; `transports/`
+  cloud, SSH, USB web, local cache; `documents/` extraction and exports.
+- `workflows/` one subpackage per workflow (`ink/`, `review/`, `forms/`,
+  `inbox/`, `structure/`, `reading/`, `live/`), engine next to its `*tools`
+  module; `workflows/tools.py` registers them all.
+- `trmnl/` is an independent tool set: it imports nothing from the reMarkable
+  side and nothing there drives the display; only `server.py` wires both
+  (guarded by a test).
+
 ## Facts not obvious from the code
 
 - **Coordinates:** ink is mapped to PDF points with `x = rm_x*ppu + page_w/2`,
-  `y = rm_y*ppu` (`ink.py`), `ppu` from the page's SceneInfo grid. Verified on
+  `y = rm_y*ppu` (`workflows/ink/page.py`), `ppu` from the page's SceneInfo grid. Verified on
   real device markup. PyMuPDF word boxes span ascender→descender: use the
-  estimated baseline, not box edges (`marks._horizontal_target`). PyMuPDF
+  estimated baseline, not box edges (`ink/marks.py: _horizontal_target`). PyMuPDF
   splits one visual line into several "blocks" — group words geometrically.
 - **Sync API rate limit:** ~30 requests per short window per account, shared by
-  every client. Metadata refreshes must be coalesced (`live.Watcher`); a bug
+  every client. Metadata refreshes must be coalesced (`live/watcher.py: Watcher`); a bug
   that refreshed every 3 s plus a reconnect loop produced 15×429/min.
 - **Notification socket:** `wss://internal.cloud.remarkable.com/notifications/ws/json/1`
   with `Authorization: Bearer <user token>`; the server drops it every few
   minutes; messages only say *that* a device synced — diff stroke-file hashes
-  from metadata (`cloud.ink_token`, `live.snapshot`) to know *what*.
+  from metadata (`workflows/cloud.py: ink_token`, `live/watcher.py: snapshot`) to know *what*.
 - A freshly uploaded document object has no file index: its ink baseline is
   `cloud.EMPTY_INK`, never `ink_token(doc)`.
 - MuPDF is not thread-safe: wrap render/analysis in `cloud.MUPDF_LOCK`, but

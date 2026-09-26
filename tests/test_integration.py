@@ -18,7 +18,7 @@ pytestmark = pytest.mark.integration
 @pytest.fixture(scope="module")
 def ssh_client():
     """Create an SSH client connected to the tablet."""
-    from remarkable_mcp.ssh import create_ssh_client
+    from remarkable_mcp.transports.ssh import create_ssh_client
 
     client = create_ssh_client()
     if not client.check_connection():
@@ -77,7 +77,7 @@ class TestDocumentRendering:
     """Verify rendering works for both v5 and v6 .rm files."""
 
     def _download_and_render(self, ssh_client, doc, page=1):
-        from remarkable_mcp.extract import render_page_from_document_zip
+        from remarkable_mcp.documents.extract import render_page_from_document_zip
 
         raw = ssh_client.download(doc)
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
@@ -121,7 +121,7 @@ class TestTextExtraction:
 
     def test_extract_from_notebook(self, ssh_client, documents, file_types):
         """Extract text from a notebook — should not raise."""
-        from remarkable_mcp.extract import extract_text_from_document_zip
+        from remarkable_mcp.documents.extract import extract_text_from_document_zip
 
         notebooks = [
             d
@@ -169,9 +169,9 @@ class TestMCPTools:
 
         import importlib
 
-        import remarkable_mcp.api
+        import remarkable_mcp.transports.api
 
-        importlib.reload(remarkable_mcp.api)
+        importlib.reload(remarkable_mcp.transports.api)
 
         try:
             from remarkable_mcp.server import mcp
@@ -183,4 +183,4 @@ class TestMCPTools:
             assert data["document_count"] > 0
         finally:
             os.environ.pop("REMARKABLE_USE_SSH", None)
-            importlib.reload(remarkable_mcp.api)
+            importlib.reload(remarkable_mcp.transports.api)

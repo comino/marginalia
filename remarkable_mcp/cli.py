@@ -210,7 +210,7 @@ Streamable HTTP Security:
     if args.register:
         # Registration mode - convert one-time code to token
         # Only import what's needed for registration
-        from remarkable_mcp.api import register_and_get_token
+        from remarkable_mcp.transports.api import register_and_get_token
 
         try:
             print(f"Registering with reMarkable using code: {args.register}")

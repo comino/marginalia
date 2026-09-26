@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from remarkable_mcp.usb_web import DOCUMENTS_URL, Document, USBWebClient
+from remarkable_mcp.transports.usb_web import DOCUMENTS_URL, Document, USBWebClient
 
 
 def _response(entries=None, *, content=b""):

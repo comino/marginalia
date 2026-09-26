@@ -9,9 +9,9 @@ from dataclasses import replace
 
 import pytest
 
-from remarkable_mcp.workflows.ink import Stroke, load_document_ink_from_zip
-from remarkable_mcp.workflows.marks import analyze_page
-from remarkable_mcp.workflows.review_pdf import render_review_pdf
+from remarkable_mcp.workflows.ink.marks import analyze_page
+from remarkable_mcp.workflows.ink.page import Stroke, load_document_ink_from_zip
+from remarkable_mcp.workflows.review.render import render_review_pdf
 from test_workflows import (
     DRAFT,
     _doc_zip,

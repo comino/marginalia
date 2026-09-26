@@ -11,16 +11,21 @@ import time
 import pymupdf
 import pytest
 
-from remarkable_mcp.workflows.code_review import collect_comments, parse_diff, render_diff
-from remarkable_mcp.workflows.forms import read_answers, render_form, render_triage, stray_strokes
-from remarkable_mcp.workflows.inbox import segment_entries
-from remarkable_mcp.workflows.ink import PageInk, Stroke, Word
-from remarkable_mcp.workflows.marks import analyze_page
-from remarkable_mcp.workflows.review import collect_requests
-from remarkable_mcp.workflows.review_pdf import render_review_pdf
-from remarkable_mcp.workflows.sketch import recognise, to_mermaid, to_svg
-from remarkable_mcp.workflows.table import find_table
-from remarkable_mcp.workflows.wireframe import build_wireframe, to_html
+from remarkable_mcp.workflows.forms.forms import (
+    read_answers,
+    render_form,
+    render_triage,
+    stray_strokes,
+)
+from remarkable_mcp.workflows.inbox.inbox import segment_entries
+from remarkable_mcp.workflows.ink.marks import analyze_page
+from remarkable_mcp.workflows.ink.page import PageInk, Stroke, Word
+from remarkable_mcp.workflows.review.code import collect_comments, parse_diff, render_diff
+from remarkable_mcp.workflows.review.markdown import collect_requests
+from remarkable_mcp.workflows.review.render import render_review_pdf
+from remarkable_mcp.workflows.structure.sketch import recognise, to_mermaid, to_svg
+from remarkable_mcp.workflows.structure.table import find_table
+from remarkable_mcp.workflows.structure.wireframe import build_wireframe, to_html
 
 W, H = 446.0, 595.0
 
@@ -164,7 +169,7 @@ def test_forms_and_reviews_survive_random_ink():
         stray_strokes(form.manifest(), pages)
         read_answers(triage.manifest(), pages)
         collect_comments(pages, diff_render.rows)
-        from remarkable_mcp.workflows.ink import DocumentInk
+        from remarkable_mcp.workflows.ink.page import DocumentInk
 
         ink = DocumentInk(pages=[page], pdf_bytes=review.pdf, page_count=review.page_count)
         collect_requests(ink, review.manifest_blocks(), "# T\n", set(), review.layout)

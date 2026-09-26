@@ -15,8 +15,8 @@ import fitz
 import pytest
 from PIL import Image
 
-from remarkable_mcp.export_resources import ExportResourceStore
-from remarkable_mcp.exporters import (
+from remarkable_mcp.core.export_resources import ExportResourceStore
+from remarkable_mcp.documents.exporters import (
     ExportMetadata,
     RenderedPage,
     render_archive_pages,
@@ -141,7 +141,7 @@ class TestPdfExporters:
             return _png(("red", "green", "blue")[page - 1]), (1404.0, 1872.0)
 
         with patch(
-            "remarkable_mcp.exporters.render_page_full_page_from_extracted_document",
+            "remarkable_mcp.documents.exporters.render_page_full_page_from_extracted_document",
             side_effect=render,
         ):
             pages = list(render_archive_pages(archive_path, _metadata(), pdf_mode="merged"))
@@ -177,7 +177,7 @@ class TestPdfExporters:
         ]
 
         with patch(
-            "remarkable_mcp.exporters.render_merged_page_from_extracted_document",
+            "remarkable_mcp.documents.exporters.render_merged_page_from_extracted_document",
             side_effect=outcomes,
         ):
             pages = list(

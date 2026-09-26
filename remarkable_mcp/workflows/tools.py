@@ -15,13 +15,14 @@ from typing import List, Optional
 
 from mcp.types import ToolAnnotations
 
-from remarkable_mcp.api import get_items_by_id
-from remarkable_mcp.responses import make_error, make_response
+from remarkable_mcp.core.responses import make_error, make_response
 from remarkable_mcp.server import mcp
-from remarkable_mcp.workflows import cloud, handwriting
-from remarkable_mcp.workflows.ink import load_document_ink_from_zip
-from remarkable_mcp.workflows.review import collect_requests, source_digest
-from remarkable_mcp.workflows.review_pdf import render_review_pdf, split_front_matter
+from remarkable_mcp.transports.api import get_items_by_id
+from remarkable_mcp.workflows import cloud
+from remarkable_mcp.workflows.ink import handwriting
+from remarkable_mcp.workflows.ink.page import load_document_ink_from_zip
+from remarkable_mcp.workflows.review.markdown import collect_requests, source_digest
+from remarkable_mcp.workflows.review.render import render_review_pdf, split_front_matter
 from remarkable_mcp.workflows.state import Store, now_iso, slugify
 
 logger = logging.getLogger(__name__)
@@ -531,7 +532,7 @@ async def remarkable_annotations(
     - remarkable_annotations("/Work/Contract draft", pages=[2, 3], include_images=True)
     </examples>
     """
-    from remarkable_mcp.tools import _find_target_document
+    from remarkable_mcp.core.tools import _find_target_document
 
     def work():
         client = cloud.client()
@@ -586,18 +587,16 @@ def register_workflow_tools(write_enabled: bool) -> None:
     if write_enabled:
         mcp.tool(annotations=_SEND)(remarkable_review_send)
 
-    from remarkable_mcp.workflows import (  # noqa: F401  (prompts register on import)
-        code_review_tools,
-        form_tools,
-        inbox_tools,
-        latex_tools,
-        live_tools,
-        overview_tools,
-        prompts,
-        reading_tools,
-        sketch_tools,
-        structure_tools,
-    )
+    from remarkable_mcp.workflows import overview as overview_tools
+    from remarkable_mcp.workflows import prompts  # noqa: F401  (prompts register on import)
+    from remarkable_mcp.workflows.forms import tools as form_tools
+    from remarkable_mcp.workflows.inbox import tools as inbox_tools
+    from remarkable_mcp.workflows.live import tools as live_tools
+    from remarkable_mcp.workflows.reading import tools as reading_tools
+    from remarkable_mcp.workflows.review import code_tools as code_review_tools
+    from remarkable_mcp.workflows.review import latex_tools
+    from remarkable_mcp.workflows.structure import sketch_tools
+    from remarkable_mcp.workflows.structure import tools as structure_tools
 
     overview_tools.register(mcp, write_enabled)
     live_tools.register(mcp, write_enabled)
@@ -611,7 +610,7 @@ def register_workflow_tools(write_enabled: bool) -> None:
 
 
 def _register_on_import() -> None:
-    from remarkable_mcp.write_tools import write_enabled
+    from remarkable_mcp.core.write_tools import write_enabled
 
     register_workflow_tools(write_enabled())
 

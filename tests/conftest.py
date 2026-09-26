@@ -22,7 +22,7 @@ def isolate_blob_cache(monkeypatch):
     with tempfile.TemporaryDirectory() as cache_dir:
         monkeypatch.setenv("REMARKABLE_CACHE_DIR", cache_dir)
         try:
-            from remarkable_mcp import api
+            from remarkable_mcp.transports import api
 
             api.reset_client_cache()
         except Exception:

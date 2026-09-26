@@ -4,8 +4,8 @@ import asyncio
 
 import pymupdf
 
-from remarkable_mcp.workflows.table import find_table
-from remarkable_mcp.workflows.wireframe import build_wireframe, to_html
+from remarkable_mcp.workflows.structure.table import find_table
+from remarkable_mcp.workflows.structure.wireframe import build_wireframe, to_html
 from test_sketch import S, ellipse_path, line_path, rect_path
 from test_workflows import (  # noqa: F401
     FINELINER,
@@ -80,7 +80,7 @@ def test_wireframe_roles_and_html():
 
 
 def test_math_blocks_without_backend(cloud, monkeypatch):  # noqa: F811
-    from remarkable_mcp.workflows import structure_tools as st
+    from remarkable_mcp.workflows.structure import tools as st
 
     doc = pymupdf.open()
     doc.new_page(width=446, height=595)
@@ -89,7 +89,7 @@ def test_math_blocks_without_backend(cloud, monkeypatch):  # noqa: F811
     eq2 = _handwriting(40, 200, words=2)
     cloud.annotate(uploaded.id, {0: [(p, FINELINER, 446.0) for p in eq1 + eq2]})
     monkeypatch.setattr(
-        "remarkable_mcp.tools._find_target_document",
+        "remarkable_mcp.core.tools._find_target_document",
         lambda items, by_id, name: next((d for d in items if d.VissibleName == name), None),
     )
     out = _json_of(asyncio.run(st.remarkable_math("Math")))
@@ -97,7 +97,7 @@ def test_math_blocks_without_backend(cloud, monkeypatch):  # noqa: F811
 
 
 def test_ink_digest_reports_only_new_pages(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import structure_tools as st
+    from remarkable_mcp.workflows.structure import tools as st
 
     doc = pymupdf.open()
     for _ in range(3):
@@ -116,7 +116,7 @@ def test_ink_digest_reports_only_new_pages(cloud):  # noqa: F811
 
 
 def test_ink_digest_never_drops_unreported_pages(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import structure_tools as st
+    from remarkable_mcp.workflows.structure import tools as st
 
     doc = pymupdf.open()
     for _ in range(9):
@@ -152,7 +152,7 @@ def test_table_with_rules_drawn_per_cell():
 
 
 def test_digest_more_hint_only_when_ink_remains(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import structure_tools as st
+    from remarkable_mcp.workflows.structure import tools as st
 
     for name in ("A", "B"):
         doc = pymupdf.open()

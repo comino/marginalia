@@ -14,7 +14,7 @@ from typing import Optional, Sequence, Tuple
 
 from mcp.types import ImageContent, TextContent
 
-from remarkable_mcp.api import get_item_path, get_items_by_id, get_rmapi
+from remarkable_mcp.transports.api import get_item_path, get_items_by_id, get_rmapi
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +30,14 @@ def client():
 
 
 def is_cloud() -> bool:
-    from remarkable_mcp.write_tools import _is_cloud_mode
+    from remarkable_mcp.core.write_tools import _is_cloud_mode
 
     return _is_cloud_mode()
 
 
 def refresh(c) -> None:
     """Drop cached metadata so the next listing reflects tablet-side changes."""
-    from remarkable_mcp.write_tools import _invalidate_client_cache
+    from remarkable_mcp.core.write_tools import _invalidate_client_cache
 
     try:
         _invalidate_client_cache(c)

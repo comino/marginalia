@@ -17,8 +17,8 @@ from test_workflows import (  # noqa: F401
 
 
 def test_whats_new_covers_code_reviews(cloud, monkeypatch):  # noqa: F811
-    from remarkable_mcp.workflows import code_review_tools as t
-    from remarkable_mcp.workflows import overview_tools
+    from remarkable_mcp.workflows import overview as overview_tools
+    from remarkable_mcp.workflows.review import code_tools as t
     from test_code_review import DIFF
 
     monkeypatch.setattr(t, "_get_diff", lambda *a: DIFF)
@@ -46,7 +46,10 @@ def test_review_peek_keeps_the_review_annotated(cloud):  # noqa: F811
 
 @pytest.mark.parametrize("bad", ["a b", "x/y", "../up", ""])
 def test_malformed_ids_are_simply_not_found(cloud, bad):  # noqa: F811
-    from remarkable_mcp.workflows import code_review_tools, form_tools, latex_tools, reading_tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
+    from remarkable_mcp.workflows.reading import tools as reading_tools
+    from remarkable_mcp.workflows.review import code_tools as code_review_tools
+    from remarkable_mcp.workflows.review import latex_tools
 
     for call, err in [
         (form_tools.remarkable_form_read(bad), "form_not_found"),
@@ -81,7 +84,10 @@ def test_read_only_mode_registers_no_writers(tmp_path, monkeypatch):
     from mcp.server.mcpserver import MCPServer
 
     from remarkable_mcp.trmnl import tools as trmnl_tools
-    from remarkable_mcp.workflows import code_review_tools, form_tools, inbox_tools, latex_tools
+    from remarkable_mcp.workflows.forms import tools as form_tools
+    from remarkable_mcp.workflows.inbox import tools as inbox_tools
+    from remarkable_mcp.workflows.review import code_tools as code_review_tools
+    from remarkable_mcp.workflows.review import latex_tools
 
     server = MCPServer(name="ro")
     trmnl_tools.register(server, write_enabled=False)
@@ -107,7 +113,7 @@ def test_read_only_mode_registers_no_writers(tmp_path, monkeypatch):
 
 
 def test_idle_shared_watcher_stops(monkeypatch):
-    from remarkable_mcp.workflows import live
+    from remarkable_mcp.workflows.live import watcher as live
 
     real_sleep = asyncio.sleep
 

@@ -27,17 +27,13 @@ uv run pytest -v
 ```
 remarkable-mcp/
 ├── remarkable_mcp/
-│   ├── server.py           # MCPServer and transports
-│   ├── tools.py            # Read and render tools
-│   ├── write_tools.py      # Upload, management, and authoring tools
-│   ├── api.py              # Transport selection and cloud fallback
-│   ├── sync.py             # Cloud sync client
-│   ├── ssh.py              # SSH client
-│   ├── usb_web.py          # USB web client
-│   ├── local_dir.py        # Desktop cache client
-│   ├── extract.py          # Text and image extraction
-│   ├── markdown_pdf.py     # Markdown-to-PDF rendering
-│   └── app_canvas.py       # MCP Apps canvas
+│   ├── server.py           # assembles the MCP server; cli.py is the entry point
+│   ├── core/               # core tools: read/render, write/manage, canvas, resources, prompts
+│   ├── transports/         # cloud sync, SSH, USB web, local desktop cache (api.py selects)
+│   ├── documents/          # text/stroke extraction, .rm composition, exports, Markdown to PDF
+│   ├── workflows/          # ink interpretation: ink/, review/, forms/, inbox/, structure/,
+│   │                       #   reading/, live/ (incl. the autopilot), overview, state, safety
+│   └── trmnl/              # TRMNL e-ink display tools (independent of the reMarkable side)
 ├── tests/                  # pytest suite (conftest.py isolates all state)
 │   ├── test_server.py
 │   ├── test_mcp_v2.py      # Modern/legacy protocol compatibility tests
@@ -99,7 +95,7 @@ Branch protection is enabled on `main` - all changes must go through pull reques
 
 ## Adding a New Tool
 
-1. Add the tool function in `remarkable_mcp/tools.py` with proper docstring and annotations
+1. Add the tool function in `remarkable_mcp/core/tools.py` with proper docstring and annotations
 2. Create unique `ToolAnnotations` with a descriptive title
 3. Add tests in `tests/test_server.py`
 4. Update the tools tables in README.md (overview) and docs/core.md or docs/workflows.md

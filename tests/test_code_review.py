@@ -5,7 +5,8 @@ import asyncio
 import pymupdf
 import pytest
 
-from remarkable_mcp.workflows.code_review import (
+from remarkable_mcp.workflows.ink.page import load_document_ink_from_zip
+from remarkable_mcp.workflows.review.code import (
     collect_comments,
     comment_body,
     github_event,
@@ -13,7 +14,6 @@ from remarkable_mcp.workflows.code_review import (
     read_verdict,
     render_diff,
 )
-from remarkable_mcp.workflows.ink import load_document_ink_from_zip
 from test_forms import _tick
 from test_workflows import (  # noqa: F401
     FINELINER,
@@ -117,7 +117,7 @@ def test_verdict_boxes():
 
 
 def test_code_review_tool_round_trip(cloud, monkeypatch):  # noqa: F811
-    from remarkable_mcp.workflows import code_review_tools as t
+    from remarkable_mcp.workflows.review import code_tools as t
 
     monkeypatch.setattr(t, "_get_diff", lambda *a: DIFF)
     sent = _json_of(asyncio.run(t.remarkable_code_review_send(pr="7", repo="me/app")))
@@ -233,7 +233,7 @@ def test_verdict_ticks_and_summaries_are_not_line_comments():
     ],
 )
 def test_diff_arguments_cannot_become_options(bad):
-    from remarkable_mcp.workflows.code_review_tools import _get_diff
+    from remarkable_mcp.workflows.review.code_tools import _get_diff
 
     args = {
         "pr": None,
@@ -253,7 +253,7 @@ def test_diff_arguments_cannot_become_options(bad):
 def test_valid_refs_are_accepted(ref, monkeypatch):
     import subprocess
 
-    from remarkable_mcp.workflows import code_review_tools as t
+    from remarkable_mcp.workflows.review import code_tools as t
 
     seen = {}
 
@@ -267,7 +267,7 @@ def test_valid_refs_are_accepted(ref, monkeypatch):
 
 
 def test_newline_in_ref_is_rejected():
-    from remarkable_mcp.workflows.code_review_tools import _get_diff
+    from remarkable_mcp.workflows.review.code_tools import _get_diff
 
     with pytest.raises(ValueError):
         _get_diff(None, None, "/tmp", "main\n", None)

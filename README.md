@@ -190,10 +190,13 @@ pen's sampling rate or adding tremor must not change what a mark means.
 
 ```
 remarkable_mcp/
-  workflows/     ink, marks, review, forms, inbox, sketch, table, wireframe,
-                 code_review, latex_review, live, autopilot, handwriting, myscript, …
-  trmnl/         TRMNL display client + tools
-  *.py           core server, transports (cloud, SSH, USB web, local dir), extraction
+  core/          core tools (read, render, write, canvas), resources, prompts
+  transports/    cloud sync, SSH, USB web, local desktop cache
+  documents/     extraction, .rm composition, exports, Markdown to PDF
+  workflows/     ink/ (strokes, marks, handwriting) · review/ (Markdown, code, LaTeX)
+                 forms/ · inbox/ · structure/ (sketch, table, wireframe) · reading/
+                 live/ (watcher, autopilot) · overview, state, safety
+  trmnl/         TRMNL display tools, independent of the reMarkable side
 docs/            workflows.md (workflow layer) · core.md (core tools) · …
 tests/           pytest suite (offline; synthetic ink, fake cloud)
 contrib/         systemd unit for the autopilot

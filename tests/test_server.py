@@ -21,21 +21,21 @@ import pytest
 import requests
 from mcp import Client
 
-from remarkable_mcp.api import (
-    get_item_path,
-    get_items_by_id,
-    register_and_get_token,
+from remarkable_mcp.core.responses import (
+    make_error,
+    make_response,
 )
-from remarkable_mcp.extract import (
+from remarkable_mcp.documents.extract import (
     extract_text_from_document_zip,
     extract_text_from_rm_file,
     find_similar_documents,
 )
-from remarkable_mcp.responses import (
-    make_error,
-    make_response,
-)
 from remarkable_mcp.server import mcp
+from remarkable_mcp.transports.api import (
+    get_item_path,
+    get_items_by_id,
+    register_and_get_token,
+)
 
 
 async def _call_tool(name: str, arguments: dict):
@@ -293,7 +293,7 @@ class TestRemarkableStatus:
     """Test remarkable_status tool."""
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_status_authenticated(self, mock_get_rmapi):
         """Test status when authenticated."""
         mock_client = Mock()
@@ -310,7 +310,7 @@ class TestRemarkableStatus:
         assert "_hint" in data
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_status_capability_matrix(self, mock_get_rmapi):
         """Status exposes per-transport and effective capability matrices."""
         mock_client = Mock()
@@ -348,7 +348,7 @@ class TestRemarkableStatus:
         assert data["capabilities"]["export"] is True
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_status_not_authenticated(self, mock_get_rmapi):
         """Test status when not authenticated."""
         mock_get_rmapi.side_effect = RuntimeError("Failed to authenticate")
@@ -363,10 +363,10 @@ class TestRemarkableStatus:
         assert "register" in data["_hint"].lower() or "ssh" in data["_hint"].lower()
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_status_reports_cloud_after_fallback(self, mock_get_rmapi, monkeypatch):
         """When USB/SSH falls back to cloud, status reports the effective transport."""
-        import remarkable_mcp.api as api
+        import remarkable_mcp.transports.api as api
 
         monkeypatch.setattr(api, "REMARKABLE_USE_USB_WEB", True)
         monkeypatch.setattr(api, "REMARKABLE_USE_SSH", False)
@@ -398,7 +398,7 @@ class TestRemarkableBrowse:
     """Test remarkable_browse tool."""
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_browse_root(self, mock_get_rmapi):
         """Test browsing root folder."""
         mock_client = Mock()
@@ -413,7 +413,7 @@ class TestRemarkableBrowse:
         assert "_hint" in data
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_browse_search_mode(self, mock_get_rmapi):
         """Test search mode."""
         mock_client = Mock()
@@ -440,7 +440,7 @@ class TestRemarkableBrowse:
         assert "_hint" in data
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_browse_error_handling(self, mock_get_rmapi):
         """Test error handling in browse."""
         mock_get_rmapi.side_effect = RuntimeError("Connection failed")
@@ -461,7 +461,7 @@ class TestRemarkableRecent:
     """Test remarkable_recent tool."""
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_recent_default_limit(self, mock_get_rmapi):
         """Test getting recent documents with default limit."""
         mock_client = Mock()
@@ -476,7 +476,7 @@ class TestRemarkableRecent:
         assert "_hint" in data
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_recent_custom_limit(self, mock_get_rmapi):
         """Test getting recent documents with custom limit."""
         mock_client = Mock()
@@ -490,7 +490,7 @@ class TestRemarkableRecent:
         assert "documents" in data
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_recent_limit_clamped(self, mock_get_rmapi):
         """Test that limit is clamped to valid range."""
         mock_client = Mock()
@@ -504,7 +504,7 @@ class TestRemarkableRecent:
         assert "count" in data
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_recent_error_handling(self, mock_get_rmapi):
         """Test error handling in recent."""
         mock_get_rmapi.side_effect = RuntimeError("Connection failed")
@@ -516,7 +516,7 @@ class TestRemarkableRecent:
         assert data["_error"]["type"] == "recent_failed"
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_recent_include_preview_does_not_crash(self, mock_get_rmapi):
         """Test that include_preview=True works without AttributeError on download result.
 
@@ -546,7 +546,7 @@ class TestRemarkableRecent:
         mock_client.download.return_value = zip_buffer.getvalue()
 
         # Simulate get_file_type returning "pdf"
-        with patch("remarkable_mcp.tools.get_file_type", return_value="pdf"):
+        with patch("remarkable_mcp.core.tools.get_file_type", return_value="pdf"):
             result = await _call_tool("remarkable_recent", {"include_preview": True})
         data = json.loads(result.content[0].text)
 
@@ -555,7 +555,7 @@ class TestRemarkableRecent:
         assert "documents" in data
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_recent_handles_null_and_mixed_modified_dates(self, mock_get_rmapi):
         """Regression test for #96: remarkable_recent must not crash when documents
         have a null modified date, nor when modified dates mix tz-aware (USB) and
@@ -607,7 +607,7 @@ class TestRemarkableSearch:
         monkeypatch.delenv("REMARKABLE_ROOT_PATH", raising=False)
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_search_awaits_remarkable_read(self, mock_get_rmapi):
         """Regression test: remarkable_search must await the async remarkable_read.
 
@@ -652,7 +652,7 @@ class TestRemarkableSearch:
             assert "coroutine" not in err, f"Per-document coroutine error leaked through: {err}"
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_search_no_documents_found(self, mock_get_rmapi):
         """Test search returns clean error when no documents match."""
         mock_client = Mock()
@@ -675,7 +675,7 @@ class TestRemarkableRead:
     """Test remarkable_read tool."""
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_read_document_not_found(self, mock_get_rmapi):
         """Test reading a non-existent document."""
         mock_client = Mock()
@@ -690,7 +690,7 @@ class TestRemarkableRead:
         assert "suggestion" in data["_error"]
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_read_error_handling(self, mock_get_rmapi):
         """Test error handling in read."""
         mock_get_rmapi.side_effect = RuntimeError("Connection failed")
@@ -702,7 +702,7 @@ class TestRemarkableRead:
         assert data["_error"]["type"] == "read_failed"
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_read_provides_suggestions(self, mock_get_rmapi, mock_document):
         """Test that read provides 'did you mean' suggestions."""
         mock_client = Mock()
@@ -718,7 +718,7 @@ class TestRemarkableRead:
         assert data["_error"]["type"] == "document_not_found"
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_read_notebook_empty_content_ocr_retry(self, mock_get_rmapi):
         """Test that remarkable_read correctly awaits the OCR auto-retry for empty notebooks.
 
@@ -754,7 +754,7 @@ class TestRemarkableRead:
 
         # This should NOT raise "the JSON object must be str, bytes or bytearray, not coroutine"
         # Previously failed because remarkable_read() was called without 'await'
-        with patch("remarkable_mcp.tools.get_file_type", return_value="notebook"):
+        with patch("remarkable_mcp.core.tools.get_file_type", return_value="notebook"):
             result = await _call_tool("remarkable_read", {"document": "Quick sheets"})
         data = json.loads(result.content[0].text)
 
@@ -767,9 +767,9 @@ class TestRemarkableRead:
         assert data["_ocr_auto_enabled"] is True
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.extract_text_from_document_zip")
-    @patch("remarkable_mcp.tools.get_file_type")
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.extract_text_from_document_zip")
+    @patch("remarkable_mcp.core.tools.get_file_type")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_read_legacy_highlights_shown_alongside_annotated_pages(
         self, mock_get_rmapi, mock_get_file_type, mock_extract
     ):
@@ -816,9 +816,9 @@ class TestRemarkableRead:
         assert "A legacy highlighted sentence." in data["content"]
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.extract_text_from_document_zip")
-    @patch("remarkable_mcp.tools.get_file_type")
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.extract_text_from_document_zip")
+    @patch("remarkable_mcp.core.tools.get_file_type")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_read_annotations_lists_page_highlights(
         self, mock_get_rmapi, mock_get_file_type, mock_extract
     ):
@@ -874,7 +874,7 @@ class TestRemarkableImage:
     """Test remarkable_image tool."""
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_image_document_not_found(self, mock_get_rmapi):
         """Test getting image from non-existent document."""
         mock_client = Mock()
@@ -889,7 +889,7 @@ class TestRemarkableImage:
         assert "suggestion" in data["_error"]
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_image_error_handling(self, mock_get_rmapi):
         """Test error handling in image tool."""
         mock_get_rmapi.side_effect = RuntimeError("Connection failed")
@@ -901,7 +901,7 @@ class TestRemarkableImage:
         assert data["_error"]["type"] == "image_failed"
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_image_provides_suggestions(self, mock_get_rmapi, mock_document):
         """Test that image tool provides 'did you mean' suggestions."""
         mock_client = Mock()
@@ -929,12 +929,12 @@ class TestRemarkableImage:
         assert compat_schema.get("default") is False
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_image_response_formats_work_without_cairo(self, mock_get_rmapi, mock_document):
         """Cairo-free rendering preserves embedded and compatibility responses."""
         from mcp.types import EmbeddedResource
 
-        from remarkable_mcp import notebooks
+        from remarkable_mcp.documents import notebooks
 
         document_zip = _make_notebook_zip(notebooks.page_rm_bytes("Portable rendering"))
         mock_client = Mock()
@@ -963,7 +963,7 @@ class TestRemarkableImage:
         ("backend", "expected_backend"),
         [("google", "google"), ("tesseract", "tesseract")],
     )
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_image_ocr_uses_configured_backend(
         self,
         mock_get_rmapi,
@@ -973,7 +973,7 @@ class TestRemarkableImage:
         expected_backend,
     ):
         """Image OCR uses only the selected provider."""
-        from remarkable_mcp import notebooks
+        from remarkable_mcp.documents import notebooks
 
         document_zip = _make_notebook_zip(notebooks.page_rm_bytes("OCR source"))
         mock_client = Mock()
@@ -985,11 +985,11 @@ class TestRemarkableImage:
 
         with (
             patch(
-                "remarkable_mcp.tools._ocr_png_google_vision",
+                "remarkable_mcp.core.tools._ocr_png_google_vision",
                 return_value="google text",
             ) as google_ocr,
             patch(
-                "remarkable_mcp.tools._ocr_png_tesseract",
+                "remarkable_mcp.core.tools._ocr_png_tesseract",
                 return_value="tesseract text",
             ) as tesseract_ocr,
         ):
@@ -1013,7 +1013,7 @@ class TestRemarkableImage:
             tesseract_ocr.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_image_google_ocr_failure_falls_back_to_tesseract(
         self,
         mock_get_rmapi,
@@ -1021,7 +1021,7 @@ class TestRemarkableImage:
         monkeypatch,
     ):
         """Explicit Google OCR remains usable when Google is unavailable."""
-        from remarkable_mcp import notebooks
+        from remarkable_mcp.documents import notebooks
 
         document_zip = _make_notebook_zip(notebooks.page_rm_bytes("OCR source"))
         mock_client = Mock()
@@ -1033,11 +1033,11 @@ class TestRemarkableImage:
 
         with (
             patch(
-                "remarkable_mcp.tools._ocr_png_google_vision",
+                "remarkable_mcp.core.tools._ocr_png_google_vision",
                 return_value=None,
             ) as google_ocr,
             patch(
-                "remarkable_mcp.tools._ocr_png_tesseract",
+                "remarkable_mcp.core.tools._ocr_png_tesseract",
                 return_value="tesseract fallback",
             ) as tesseract_ocr,
         ):
@@ -1079,9 +1079,9 @@ class TestMergedRendering:
         assert {"type": "null"} in merged_schema.get("anyOf", [])
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
-    @patch("remarkable_mcp.tools.render_merged_page_from_document_zip")
-    @patch("remarkable_mcp.tools.get_document_page_count")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.render_merged_page_from_document_zip")
+    @patch("remarkable_mcp.core.tools.get_document_page_count")
     async def test_render_merged_fallback_no_pdf(
         self,
         mock_page_count,
@@ -1124,7 +1124,7 @@ class TestMergedRendering:
         assert data.get("merged") is False
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_render_merged_svg_ignored(self, mock_get_rmapi, mock_document):
         """Test that SVG format ignores render_merged gracefully."""
         mock_client = Mock()
@@ -1135,9 +1135,9 @@ class TestMergedRendering:
 
         with (
             patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
-            patch("remarkable_mcp.tools.get_document_page_count", return_value=2),
+            patch("remarkable_mcp.core.tools.get_document_page_count", return_value=2),
             patch(
-                "remarkable_mcp.tools.render_page_from_document_zip_svg",
+                "remarkable_mcp.core.tools.render_page_from_document_zip_svg",
                 return_value='<svg xmlns="http://www.w3.org/2000/svg"></svg>',
             ),
         ):
@@ -1163,9 +1163,9 @@ class TestMergedRendering:
         assert "render_merged is only supported with PNG" in data.get("_hint", "")
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
-    @patch("remarkable_mcp.tools.render_merged_page_from_document_zip")
-    @patch("remarkable_mcp.tools.get_document_page_count")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.render_merged_page_from_document_zip")
+    @patch("remarkable_mcp.core.tools.get_document_page_count")
     async def test_render_merged_success_path(
         self,
         mock_page_count,
@@ -1262,7 +1262,7 @@ class TestCairoFreeRasterization:
 
         from PIL import Image
 
-        from remarkable_mcp.extract import _svg_string_to_png
+        from remarkable_mcp.documents.extract import _svg_string_to_png
 
         svg = (
             '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" '
@@ -1292,8 +1292,8 @@ class TestCairoFreeRasterization:
 
         from PIL import Image
 
-        from remarkable_mcp import notebooks
-        from remarkable_mcp.extract import (
+        from remarkable_mcp.documents import notebooks
+        from remarkable_mcp.documents.extract import (
             CONTENT_MARGIN,
             render_page_from_document_zip,
             render_page_from_document_zip_svg,
@@ -1327,8 +1327,8 @@ class TestCairoFreeRasterization:
 
         from PIL import Image, ImageChops
 
-        from remarkable_mcp import notebooks
-        from remarkable_mcp.extract import (
+        from remarkable_mcp.documents import notebooks
+        from remarkable_mcp.documents.extract import (
             _render_pdf_page_to_png,
             render_merged_page_from_document_zip,
         )
@@ -1361,7 +1361,7 @@ class TestRenderTabletPdfFallback:
 
     def test_render_tablet_pdf_page_to_png_returns_png(self):
         """A valid PDF page rasterizes to PNG bytes."""
-        from remarkable_mcp.extract import render_tablet_pdf_page_to_png
+        from remarkable_mcp.documents.extract import render_tablet_pdf_page_to_png
 
         pdf = _make_synthetic_pdf(2)
         png = render_tablet_pdf_page_to_png(pdf, page=1)
@@ -1370,7 +1370,7 @@ class TestRenderTabletPdfFallback:
 
     def test_render_tablet_pdf_page_out_of_range(self):
         """Out-of-range page returns None rather than raising."""
-        from remarkable_mcp.extract import render_tablet_pdf_page_to_png
+        from remarkable_mcp.documents.extract import render_tablet_pdf_page_to_png
 
         pdf = _make_synthetic_pdf(1)
         assert render_tablet_pdf_page_to_png(pdf, page=5) is None
@@ -1378,15 +1378,15 @@ class TestRenderTabletPdfFallback:
 
     def test_render_tablet_pdf_invalid_bytes(self):
         """Invalid PDF bytes return None rather than raising."""
-        from remarkable_mcp.extract import render_tablet_pdf_page_to_png
+        from remarkable_mcp.documents.extract import render_tablet_pdf_page_to_png
 
         assert render_tablet_pdf_page_to_png(b"not a pdf", page=1) is None
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.download_raw_file")
-    @patch("remarkable_mcp.tools.render_page_from_document_zip")
-    @patch("remarkable_mcp.tools.get_document_page_count")
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.download_raw_file")
+    @patch("remarkable_mcp.core.tools.render_page_from_document_zip")
+    @patch("remarkable_mcp.core.tools.get_document_page_count")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_image_falls_back_to_tablet_pdf(
         self,
         mock_get_rmapi,
@@ -1427,11 +1427,11 @@ class TestRenderTabletPdfFallback:
         mock_download_raw.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.render_page_full_page_from_document_zip")
-    @patch("remarkable_mcp.tools.download_raw_file")
-    @patch("remarkable_mcp.tools.render_page_from_document_zip")
-    @patch("remarkable_mcp.tools.get_document_page_count")
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.render_page_full_page_from_document_zip")
+    @patch("remarkable_mcp.core.tools.download_raw_file")
+    @patch("remarkable_mcp.core.tools.render_page_from_document_zip")
+    @patch("remarkable_mcp.core.tools.get_document_page_count")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_image_render_failed_when_no_fallback(
         self,
         mock_get_rmapi,
@@ -1472,11 +1472,11 @@ class TestRenderTabletPdfFallback:
         assert "pymupdf" in suggestion
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.render_page_full_page_from_document_zip")
-    @patch("remarkable_mcp.tools.download_raw_file")
-    @patch("remarkable_mcp.tools.render_page_from_document_zip")
-    @patch("remarkable_mcp.tools.get_document_page_count")
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.render_page_full_page_from_document_zip")
+    @patch("remarkable_mcp.core.tools.download_raw_file")
+    @patch("remarkable_mcp.core.tools.render_page_from_document_zip")
+    @patch("remarkable_mcp.core.tools.get_document_page_count")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_image_falls_back_to_blank_full_page(
         self,
         mock_get_rmapi,
@@ -1529,8 +1529,8 @@ class TestRenderTabletPdfFallback:
 class TestRegistration:
     """Test registration functionality."""
 
-    @patch("remarkable_mcp.sync.time.sleep")
-    @patch("remarkable_mcp.sync._issue_request")
+    @patch("remarkable_mcp.transports.sync.time.sleep")
+    @patch("remarkable_mcp.transports.sync._issue_request")
     def test_register_and_get_token(self, mock_request, mock_sleep, monkeypatch, tmp_path):
         """Test registration process."""
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -1556,8 +1556,8 @@ class TestRegistration:
         call_args = mock_request.call_args
         assert "webapp-prod.cloud.remarkable.engineering" in call_args[0][1]
 
-    @patch("remarkable_mcp.sync.time.sleep")
-    @patch("remarkable_mcp.sync._issue_request")
+    @patch("remarkable_mcp.transports.sync.time.sleep")
+    @patch("remarkable_mcp.transports.sync._issue_request")
     def test_register_invalid_code(self, mock_request, mock_sleep):
         """Test registration with invalid/expired code."""
         # Mock 400 response (invalid code)
@@ -1597,7 +1597,7 @@ class TestE2E:
             assert tool.name.startswith("remarkable_")
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_e2e_call_tool_flow(self, mock_get_rmapi):
         """Test end-to-end flow of calling a tool."""
         mock_client = Mock()
@@ -1633,7 +1633,7 @@ class TestE2E:
     @pytest.mark.asyncio
     async def test_all_tools_return_json_with_hint(self):
         """Test that all tools return JSON with _hint field."""
-        with patch("remarkable_mcp.tools.get_rmapi") as mock_get_rmapi:
+        with patch("remarkable_mcp.core.tools.get_rmapi") as mock_get_rmapi:
             mock_client = Mock()
             mock_get_rmapi.return_value = mock_client
             mock_client.get_meta_items.return_value = []
@@ -1663,7 +1663,7 @@ class TestResponseConsistency:
     """Test that responses follow consistent patterns."""
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_all_errors_have_required_fields(self, mock_get_rmapi):
         """Test that all error responses have required fields."""
         mock_get_rmapi.side_effect = RuntimeError("Test error")
@@ -1701,7 +1701,7 @@ class TestCapabilityChecking:
 
     def test_get_client_capabilities_without_context(self):
         """Test get_client_capabilities returns None without valid context."""
-        from remarkable_mcp.capabilities import get_client_capabilities
+        from remarkable_mcp.core.capabilities import get_client_capabilities
 
         mock_ctx = Mock()
         mock_ctx.client_capabilities = None
@@ -1711,7 +1711,7 @@ class TestCapabilityChecking:
 
     def test_get_client_capabilities_without_client_params(self):
         """Test get_client_capabilities returns None without client_params."""
-        from remarkable_mcp.capabilities import get_client_capabilities
+        from remarkable_mcp.core.capabilities import get_client_capabilities
 
         mock_ctx = Mock()
         mock_ctx.client_capabilities = None
@@ -1723,7 +1723,7 @@ class TestCapabilityChecking:
         """Test get_client_capabilities returns capabilities when available."""
         from mcp.types import ClientCapabilities, ElicitationCapability
 
-        from remarkable_mcp.capabilities import get_client_capabilities
+        from remarkable_mcp.core.capabilities import get_client_capabilities
 
         mock_caps = ClientCapabilities(elicitation=ElicitationCapability())
 
@@ -1738,7 +1738,7 @@ class TestCapabilityChecking:
         """Test client_supports_elicitation."""
         from mcp.types import ClientCapabilities, ElicitationCapability
 
-        from remarkable_mcp.capabilities import client_supports_elicitation
+        from remarkable_mcp.core.capabilities import client_supports_elicitation
 
         # Test with elicitation enabled
         mock_caps = ClientCapabilities(elicitation=ElicitationCapability())
@@ -1758,7 +1758,7 @@ class TestCapabilityChecking:
         """Test client_supports_roots."""
         from mcp.types import ClientCapabilities, RootsCapability
 
-        from remarkable_mcp.capabilities import client_supports_roots
+        from remarkable_mcp.core.capabilities import client_supports_roots
 
         # Test with roots enabled
         mock_caps = ClientCapabilities(roots=RootsCapability())
@@ -1778,7 +1778,7 @@ class TestCapabilityChecking:
         """Test client_supports_experimental."""
         from mcp.types import ClientCapabilities
 
-        from remarkable_mcp.capabilities import client_supports_experimental
+        from remarkable_mcp.core.capabilities import client_supports_experimental
 
         # Test with experimental feature present
         mock_caps = ClientCapabilities(experimental={"my_feature": {}})
@@ -1797,7 +1797,7 @@ class TestCapabilityChecking:
 
     def test_get_client_info(self):
         """Test get_client_info."""
-        from remarkable_mcp.capabilities import get_client_info
+        from remarkable_mcp.core.capabilities import get_client_info
 
         mock_ctx = Mock()
         mock_ctx.session = Mock()
@@ -1815,7 +1815,7 @@ class TestCapabilityChecking:
 
     def test_get_client_info_without_client_info(self):
         """Test get_client_info when clientInfo is None."""
-        from remarkable_mcp.capabilities import get_client_info
+        from remarkable_mcp.core.capabilities import get_client_info
 
         mock_ctx = Mock()
         mock_ctx.session = Mock()
@@ -1831,7 +1831,7 @@ class TestCapabilityChecking:
 
     def test_get_protocol_version(self):
         """Test get_protocol_version."""
-        from remarkable_mcp.capabilities import get_protocol_version
+        from remarkable_mcp.core.capabilities import get_protocol_version
 
         mock_ctx = Mock()
         mock_ctx.protocol_version = "2024-11-05"
@@ -1841,7 +1841,7 @@ class TestCapabilityChecking:
 
     def test_get_protocol_version_without_context(self):
         """Test get_protocol_version returns None without valid context."""
-        from remarkable_mcp.capabilities import get_protocol_version
+        from remarkable_mcp.core.capabilities import get_protocol_version
 
         mock_ctx = Mock()
         mock_ctx.protocol_version = None
@@ -1879,27 +1879,27 @@ class TestOCRBackendConfiguration:
 
     def test_get_ocr_backend_default(self, monkeypatch):
         """Test default OCR backend is auto."""
-        from remarkable_mcp.extract import get_ocr_backend
+        from remarkable_mcp.documents.extract import get_ocr_backend
 
         monkeypatch.delenv("REMARKABLE_OCR_BACKEND", raising=False)
         assert get_ocr_backend() == "auto"
 
     @pytest.mark.parametrize("backend", ["auto", "google", "tesseract"])
     def test_get_ocr_backend_accepts_supported_values(self, monkeypatch, backend):
-        from remarkable_mcp.extract import get_ocr_backend
+        from remarkable_mcp.documents.extract import get_ocr_backend
 
         monkeypatch.setenv("REMARKABLE_OCR_BACKEND", backend.upper())
         assert get_ocr_backend() == backend
 
     def test_get_ocr_backend_migrates_legacy_value(self, monkeypatch, caplog):
-        from remarkable_mcp.extract import get_ocr_backend
+        from remarkable_mcp.documents.extract import get_ocr_backend
 
         monkeypatch.setenv("REMARKABLE_OCR_BACKEND", "sampling")
         assert get_ocr_backend() == "auto"
         assert "has been removed" in caplog.text
 
     def test_get_ocr_backend_falls_back_for_unknown_value(self, monkeypatch, caplog):
-        from remarkable_mcp.extract import get_ocr_backend
+        from remarkable_mcp.documents.extract import get_ocr_backend
 
         monkeypatch.setenv("REMARKABLE_OCR_BACKEND", "unknown")
         assert get_ocr_backend() == "auto"
@@ -1911,7 +1911,7 @@ class TestOCRBackendConfiguration:
         monkeypatch,
         backend,
     ):
-        from remarkable_mcp import extract
+        from remarkable_mcp.documents import extract
 
         monkeypatch.setenv("REMARKABLE_OCR_BACKEND", backend)
         if backend == "auto":
@@ -1944,7 +1944,7 @@ class TestTagSupport:
     @pytest.mark.asyncio
     async def test_document_has_tags_field(self):
         """Test that Document dataclass includes tags field."""
-        from remarkable_mcp.sync import Document
+        from remarkable_mcp.transports.sync import Document
 
         doc = Document(
             id="test-id",
@@ -1959,7 +1959,7 @@ class TestTagSupport:
     @pytest.mark.asyncio
     async def test_document_tags_default_empty(self):
         """Test that Document tags default to empty list."""
-        from remarkable_mcp.sync import Document
+        from remarkable_mcp.transports.sync import Document
 
         doc = Document(
             id="test-id",
@@ -1984,8 +1984,8 @@ class TestTagSupport:
 
         mock_client.get_meta_items.return_value = [mock_doc]
 
-        with patch("remarkable_mcp.tools.get_rmapi", return_value=mock_client):
-            with patch("remarkable_mcp.tools._is_cloud_archived", return_value=False):
+        with patch("remarkable_mcp.core.tools.get_rmapi", return_value=mock_client):
+            with patch("remarkable_mcp.core.tools._is_cloud_archived", return_value=False):
                 result = await _call_tool("remarkable_browse", {"path": "/"})
                 data = json.loads(result.content[0].text)
 
@@ -2018,8 +2018,8 @@ class TestTagSupport:
 
         mock_client.get_meta_items.return_value = [mock_doc1, mock_doc2]
 
-        with patch("remarkable_mcp.tools.get_rmapi", return_value=mock_client):
-            with patch("remarkable_mcp.tools._is_cloud_archived", return_value=False):
+        with patch("remarkable_mcp.core.tools.get_rmapi", return_value=mock_client):
+            with patch("remarkable_mcp.core.tools._is_cloud_archived", return_value=False):
                 result = await _call_tool("remarkable_browse", {"path": "/", "tags": ["work"]})
                 data = json.loads(result.content[0].text)
 
@@ -2043,8 +2043,8 @@ class TestTagSupport:
 
         mock_client.get_meta_items.return_value = [mock_doc]
 
-        with patch("remarkable_mcp.tools.get_rmapi", return_value=mock_client):
-            with patch("remarkable_mcp.tools._is_cloud_archived", return_value=False):
+        with patch("remarkable_mcp.core.tools.get_rmapi", return_value=mock_client):
+            with patch("remarkable_mcp.core.tools._is_cloud_archived", return_value=False):
                 result = await _call_tool("remarkable_browse", {"query": "meeting"})
                 data = json.loads(result.content[0].text)
 
@@ -2076,8 +2076,8 @@ class TestTagSupport:
 
         mock_client.get_meta_items.return_value = [mock_doc1, mock_doc2]
 
-        with patch("remarkable_mcp.tools.get_rmapi", return_value=mock_client):
-            with patch("remarkable_mcp.tools._is_cloud_archived", return_value=False):
+        with patch("remarkable_mcp.core.tools.get_rmapi", return_value=mock_client):
+            with patch("remarkable_mcp.core.tools._is_cloud_archived", return_value=False):
                 result = await _call_tool(
                     "remarkable_browse", {"query": "meeting", "tags": ["work"]}
                 )
@@ -2108,7 +2108,7 @@ class TestIsCloudArchivedFix:
         The synced field means 'local changes pushed to cloud', NOT 'document
         is present on the device'. Chrome extension docs arrive with synced=false.
         """
-        from remarkable_mcp.ssh import Document
+        from remarkable_mcp.transports.ssh import Document
 
         doc = Document(
             id="d1",
@@ -2122,7 +2122,7 @@ class TestIsCloudArchivedFix:
 
     def test_trashed_doc_is_cloud_archived(self):
         """Documents in trash should still be hidden."""
-        from remarkable_mcp.ssh import Document
+        from remarkable_mcp.transports.ssh import Document
 
         doc = Document(
             id="d2",
@@ -2136,7 +2136,7 @@ class TestIsCloudArchivedFix:
 
     def test_normal_doc_is_not_cloud_archived(self):
         """Normal documents should be visible."""
-        from remarkable_mcp.ssh import Document
+        from remarkable_mcp.transports.ssh import Document
 
         doc = Document(
             id="d3",
@@ -2150,7 +2150,7 @@ class TestIsCloudArchivedFix:
 
     def test_synced_false_in_trash_is_cloud_archived(self):
         """Documents that are both synced=false AND in trash should be hidden."""
-        from remarkable_mcp.ssh import Document
+        from remarkable_mcp.transports.ssh import Document
 
         doc = Document(
             id="d4",
@@ -2238,14 +2238,14 @@ class TestRmToSvgRendering:
 
         from packaging.version import Version
 
-        from remarkable_mcp import extract
+        from remarkable_mcp.documents import extract
 
         assert not hasattr(extract, "_rmc_executable")
         assert Version(version("rmscene")) >= Version("0.8.0")
 
     def test_rm_to_svg_renders_v6_current_firmware(self):
         """_rm_to_svg renders a current-firmware (v6) file via rmscene (the #95 fix)."""
-        from remarkable_mcp.extract import _rm_to_svg
+        from remarkable_mcp.documents.extract import _rm_to_svg
 
         try:
             data = _make_v6_rm_bytes()
@@ -2274,7 +2274,7 @@ class TestRmToSvgRendering:
         """_rm_to_svg renders a v5 file via the built-in renderer (no rmc needed)."""
         import struct
 
-        from remarkable_mcp.extract import _rm_to_svg
+        from remarkable_mcp.documents.extract import _rm_to_svg
 
         # Build minimal v5 .rm file with one stroke
         buf = bytearray()
@@ -2306,7 +2306,7 @@ class TestRmToSvgRendering:
 
     def test_rm_to_svg_returns_false_for_garbage(self):
         """_rm_to_svg should return False for unrecognized file formats."""
-        from remarkable_mcp.extract import _rm_to_svg
+        from remarkable_mcp.documents.extract import _rm_to_svg
 
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as rm_tmp:
             rm_tmp.write(b"this is not a valid rm file at all")
@@ -2333,7 +2333,7 @@ class TestUSBWebInterface:
     @patch("requests.request")
     def test_usb_web_check_connection(self, mock_request):
         """Test USB web interface connection check."""
-        from remarkable_mcp.usb_web import USBWebClient
+        from remarkable_mcp.transports.usb_web import USBWebClient
 
         # Mock successful response
         mock_response = Mock()
@@ -2350,7 +2350,7 @@ class TestUSBWebInterface:
     @patch("requests.request")
     def test_usb_web_connection_error(self, mock_request):
         """Test USB web interface connection error."""
-        from remarkable_mcp.usb_web import USBWebClient
+        from remarkable_mcp.transports.usb_web import USBWebClient
 
         # Mock connection error
         mock_request.side_effect = Exception("Connection refused")
@@ -2361,7 +2361,7 @@ class TestUSBWebInterface:
     @patch("requests.request")
     def test_usb_web_get_meta_items(self, mock_request):
         """Test fetching documents via USB web interface."""
-        from remarkable_mcp.usb_web import USBWebClient
+        from remarkable_mcp.transports.usb_web import USBWebClient
 
         # Mock successful response with documents
         mock_response = Mock()
@@ -2387,7 +2387,7 @@ class TestUSBWebInterface:
     @patch("requests.request")
     def test_usb_web_download(self, mock_request):
         """Test downloading document via USB web interface."""
-        from remarkable_mcp.usb_web import Document, USBWebClient
+        from remarkable_mcp.transports.usb_web import Document, USBWebClient
 
         # Mock successful download response
         mock_response = Mock()
@@ -2401,11 +2401,11 @@ class TestUSBWebInterface:
         content = client.download(doc)
         assert content == b"fake zip content"
 
-    @patch("remarkable_mcp.usb_web.time.sleep")
+    @patch("remarkable_mcp.transports.usb_web.time.sleep")
     @patch("requests.request")
     def test_usb_web_get_retries_408_until_success(self, mock_request, mock_sleep):
         """A transient xochitl 408 is retried for a safe GET request."""
-        from remarkable_mcp.usb_web import USBWebClient
+        from remarkable_mcp.transports.usb_web import USBWebClient
 
         timed_out = Mock(status_code=408)
         succeeded = Mock(status_code=200)
@@ -2419,11 +2419,11 @@ class TestUSBWebInterface:
         timed_out.close.assert_called_once_with()
         mock_sleep.assert_called_once_with(0.25)
 
-    @patch("remarkable_mcp.usb_web.time.sleep")
+    @patch("remarkable_mcp.transports.usb_web.time.sleep")
     @patch("requests.request")
     def test_usb_web_get_408_exhaustion_is_educational(self, mock_request, mock_sleep):
         """Exhausted GET retries explain that xochitl may be temporarily busy."""
-        from remarkable_mcp.usb_web import USBWebClient
+        from remarkable_mcp.transports.usb_web import USBWebClient
 
         responses = [Mock(status_code=408) for _ in range(3)]
         mock_request.side_effect = responses
@@ -2441,11 +2441,11 @@ class TestUSBWebInterface:
         responses[1].close.assert_called_once_with()
         responses[2].close.assert_called_once_with()
 
-    @patch("remarkable_mcp.usb_web.time.sleep")
+    @patch("remarkable_mcp.transports.usb_web.time.sleep")
     @patch("requests.request")
     def test_usb_web_does_not_retry_408_for_non_get(self, mock_request, mock_sleep):
         """Potentially mutating requests retain their single-attempt behavior."""
-        from remarkable_mcp.usb_web import USBWebClient
+        from remarkable_mcp.transports.usb_web import USBWebClient
 
         response = Mock(status_code=408)
         response.raise_for_status.side_effect = requests.HTTPError(
@@ -2459,11 +2459,11 @@ class TestUSBWebInterface:
         mock_request.assert_called_once()
         mock_sleep.assert_not_called()
 
-    @patch("remarkable_mcp.usb_web.time.sleep")
+    @patch("remarkable_mcp.transports.usb_web.time.sleep")
     @patch("requests.request")
     def test_usb_web_does_not_retry_non_transient_http_error(self, mock_request, mock_sleep):
         """Non-transient HTTP errors keep the existing error behavior."""
-        from remarkable_mcp.usb_web import USBWebClient
+        from remarkable_mcp.transports.usb_web import USBWebClient
 
         response = Mock(status_code=404)
         response.raise_for_status.side_effect = requests.HTTPError("404 Client Error: Not Found")
@@ -2475,7 +2475,7 @@ class TestUSBWebInterface:
         mock_request.assert_called_once()
         mock_sleep.assert_not_called()
 
-    @patch("remarkable_mcp.usb_web.create_usb_web_client")
+    @patch("remarkable_mcp.transports.usb_web.create_usb_web_client")
     def test_get_rmapi_usb_web_mode(self, mock_create_client):
         """Test get_rmapi in USB web mode."""
         import os
@@ -2485,15 +2485,15 @@ class TestUSBWebInterface:
         os.environ["REMARKABLE_USE_USB_WEB"] = "1"
 
         # Reload the module to pick up the new env var
-        if "remarkable_mcp.api" in sys.modules:
+        if "remarkable_mcp.transports.api" in sys.modules:
             import importlib
 
-            import remarkable_mcp.api
+            import remarkable_mcp.transports.api
 
-            importlib.reload(remarkable_mcp.api)
-            from remarkable_mcp.api import get_rmapi
+            importlib.reload(remarkable_mcp.transports.api)
+            from remarkable_mcp.transports.api import get_rmapi
         else:
-            from remarkable_mcp.api import get_rmapi
+            from remarkable_mcp.transports.api import get_rmapi
 
         # Mock USB web client
         mock_client = Mock()
@@ -2508,15 +2508,15 @@ class TestUSBWebInterface:
             if "REMARKABLE_USE_USB_WEB" in os.environ:
                 del os.environ["REMARKABLE_USE_USB_WEB"]
             # Reload to reset
-            if "remarkable_mcp.api" in sys.modules:
+            if "remarkable_mcp.transports.api" in sys.modules:
                 import importlib
 
-                import remarkable_mcp.api
+                import remarkable_mcp.transports.api
 
-                importlib.reload(remarkable_mcp.api)
+                importlib.reload(remarkable_mcp.transports.api)
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_status_usb_web_mode(self, mock_get_rmapi):
         """Test remarkable_status in USB web mode."""
         import os
@@ -2526,12 +2526,12 @@ class TestUSBWebInterface:
         os.environ["REMARKABLE_USE_USB_WEB"] = "1"
 
         # Reload the modules to pick up the new env var
-        if "remarkable_mcp.api" in sys.modules:
+        if "remarkable_mcp.transports.api" in sys.modules:
             import importlib
 
-            import remarkable_mcp.api
+            import remarkable_mcp.transports.api
 
-            importlib.reload(remarkable_mcp.api)
+            importlib.reload(remarkable_mcp.transports.api)
 
         try:
             # Mock USB web client
@@ -2555,19 +2555,19 @@ class TestUSBWebInterface:
             if "REMARKABLE_USE_USB_WEB" in os.environ:
                 del os.environ["REMARKABLE_USE_USB_WEB"]
             # Reload to reset
-            if "remarkable_mcp.api" in sys.modules:
+            if "remarkable_mcp.transports.api" in sys.modules:
                 import importlib
 
-                import remarkable_mcp.api
+                import remarkable_mcp.transports.api
 
-                importlib.reload(remarkable_mcp.api)
+                importlib.reload(remarkable_mcp.transports.api)
 
     @pytest.mark.asyncio
     async def test_usb_uploads_use_configured_operation_bound(self, monkeypatch, tmp_path):
         import asyncio
         import time
 
-        from remarkable_mcp.usb_web import Document, USBWebClient
+        from remarkable_mcp.transports.usb_web import Document, USBWebClient
 
         monkeypatch.setenv("REMARKABLE_USE_USB_WEB", "1")
         monkeypatch.delenv("REMARKABLE_USE_SSH", raising=False)
@@ -2604,9 +2604,9 @@ class TestUSBWebInterface:
 
         try:
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
                 patch(
-                    "remarkable_mcp.write_tools._upload_via_usb_web",
+                    "remarkable_mcp.core.write_tools._upload_via_usb_web",
                     side_effect=upload,
                 ),
             ):
@@ -2649,10 +2649,10 @@ class TestCloudSyncFileHeaders:
             response.json.return_value = json_data
         return response
 
-    @patch("remarkable_mcp.sync._http_request_with_retry")
+    @patch("remarkable_mcp.transports.sync._http_request_with_retry")
     def test_get_meta_items_sends_logical_rm_filename_headers(self, mock_request):
         """Cloud sync list requests must send the logical filename for each blob."""
-        from remarkable_mcp.sync import FILES_URL, RemarkableClient
+        from remarkable_mcp.transports.sync import FILES_URL, RemarkableClient
 
         root_hash = "root-hash"
         doc_id = "doc-123"
@@ -2691,10 +2691,10 @@ class TestCloudSyncFileHeaders:
             f"{FILES_URL}/{metadata_hash}": f"{doc_id}.metadata",
         }
 
-    @patch("remarkable_mcp.sync._http_request_with_retry")
+    @patch("remarkable_mcp.transports.sync._http_request_with_retry")
     def test_download_sends_entry_ids_as_rm_filename_headers(self, mock_request):
         """Cloud sync downloads must pass each blob's index id as rm-filename."""
-        from remarkable_mcp.sync import FILES_URL, Document, RemarkableClient
+        from remarkable_mcp.transports.sync import FILES_URL, Document, RemarkableClient
 
         doc_id = "doc-123"
         doc_hash = "doc-hash"
@@ -2749,11 +2749,11 @@ class TestRetryBackoff:
         monkeypatch.delenv("REMARKABLE_RETRY_ATTEMPTS", raising=False)
         monkeypatch.delenv("REMARKABLE_RETRY_DELAY", raising=False)
 
-    @patch("remarkable_mcp.sync.time.sleep")
-    @patch("remarkable_mcp.sync._issue_request")
+    @patch("remarkable_mcp.transports.sync.time.sleep")
+    @patch("remarkable_mcp.transports.sync._issue_request")
     def test_retry_succeeds_after_transient_503(self, mock_request, mock_sleep):
         """Retry succeeds when a transient 503 clears on the second attempt."""
-        from remarkable_mcp.sync import _http_request_with_retry
+        from remarkable_mcp.transports.sync import _http_request_with_retry
 
         fail_response = Mock()
         fail_response.status_code = 503
@@ -2769,11 +2769,11 @@ class TestRetryBackoff:
         assert mock_request.call_count == 2
         mock_sleep.assert_called_once()
 
-    @patch("remarkable_mcp.sync.time.sleep")
-    @patch("remarkable_mcp.sync._issue_request")
+    @patch("remarkable_mcp.transports.sync.time.sleep")
+    @patch("remarkable_mcp.transports.sync._issue_request")
     def test_retry_exhaustion_raises_last_exception(self, mock_request, mock_sleep):
         """After exhausting retries on connection errors, the last exception is raised."""
-        from remarkable_mcp.sync import _http_request_with_retry
+        from remarkable_mcp.transports.sync import _http_request_with_retry
 
         mock_request.side_effect = requests.ConnectionError("refused")
 
@@ -2782,11 +2782,11 @@ class TestRetryBackoff:
 
         assert mock_request.call_count == 3  # DEFAULT_RETRY_ATTEMPTS
 
-    @patch("remarkable_mcp.sync.time.sleep")
-    @patch("remarkable_mcp.sync._issue_request")
+    @patch("remarkable_mcp.transports.sync.time.sleep")
+    @patch("remarkable_mcp.transports.sync._issue_request")
     def test_no_retry_on_401(self, mock_request, mock_sleep):
         """401 is not retried - it is handled by the caller's token renewal."""
-        from remarkable_mcp.sync import _http_request_with_retry
+        from remarkable_mcp.transports.sync import _http_request_with_retry
 
         response_401 = Mock()
         response_401.status_code = 401
@@ -2798,11 +2798,11 @@ class TestRetryBackoff:
         assert mock_request.call_count == 1
         mock_sleep.assert_not_called()
 
-    @patch("remarkable_mcp.sync.time.sleep")
-    @patch("remarkable_mcp.sync._issue_request")
+    @patch("remarkable_mcp.transports.sync.time.sleep")
+    @patch("remarkable_mcp.transports.sync._issue_request")
     def test_no_retry_on_400(self, mock_request, mock_sleep):
         """400 is not retried - client errors are not transient."""
-        from remarkable_mcp.sync import _http_request_with_retry
+        from remarkable_mcp.transports.sync import _http_request_with_retry
 
         response_400 = Mock()
         response_400.status_code = 400
@@ -2814,11 +2814,11 @@ class TestRetryBackoff:
         assert mock_request.call_count == 1
         mock_sleep.assert_not_called()
 
-    @patch("remarkable_mcp.sync.time.sleep")
-    @patch("remarkable_mcp.sync._issue_request")
+    @patch("remarkable_mcp.transports.sync.time.sleep")
+    @patch("remarkable_mcp.transports.sync._issue_request")
     def test_retry_after_header_honoured(self, mock_request, mock_sleep):
         """Retry-After header value is used as the sleep duration."""
-        from remarkable_mcp.sync import _http_request_with_retry
+        from remarkable_mcp.transports.sync import _http_request_with_retry
 
         rate_limited = Mock()
         rate_limited.status_code = 429
@@ -2833,11 +2833,11 @@ class TestRetryBackoff:
         assert result.status_code == 200
         mock_sleep.assert_called_once_with(5.0)
 
-    @patch("remarkable_mcp.sync.time.sleep")
-    @patch("remarkable_mcp.sync._issue_request")
+    @patch("remarkable_mcp.transports.sync.time.sleep")
+    @patch("remarkable_mcp.transports.sync._issue_request")
     def test_retry_after_header_capped_at_max(self, mock_request, mock_sleep):
         """Retry-After values above MAX_RETRY_DELAY are capped."""
-        from remarkable_mcp.sync import MAX_RETRY_DELAY, _http_request_with_retry
+        from remarkable_mcp.transports.sync import MAX_RETRY_DELAY, _http_request_with_retry
 
         rate_limited = Mock()
         rate_limited.status_code = 429
@@ -2854,18 +2854,18 @@ class TestRetryBackoff:
 
     def test_compute_sleep_within_bounds(self):
         """_compute_sleep always returns a value between 0 and MAX_RETRY_DELAY."""
-        from remarkable_mcp.sync import MAX_RETRY_DELAY, _compute_sleep
+        from remarkable_mcp.transports.sync import MAX_RETRY_DELAY, _compute_sleep
 
         for attempt in range(10):
             for _ in range(50):
                 val = _compute_sleep(2.0, attempt)
                 assert 0 <= val <= MAX_RETRY_DELAY
 
-    @patch("remarkable_mcp.sync.time.sleep")
-    @patch("remarkable_mcp.sync._issue_request")
+    @patch("remarkable_mcp.transports.sync.time.sleep")
+    @patch("remarkable_mcp.transports.sync._issue_request")
     def test_retry_exhaustion_returns_last_response(self, mock_request, mock_sleep):
         """When all retries return retryable status, the last response is returned."""
-        from remarkable_mcp.sync import _http_request_with_retry
+        from remarkable_mcp.transports.sync import _http_request_with_retry
 
         response_503 = Mock()
         response_503.status_code = 503
@@ -2879,7 +2879,7 @@ class TestRetryBackoff:
 
     def test_parse_retry_after_seconds(self):
         """Numeric (delay-seconds) Retry-After is parsed as seconds."""
-        from remarkable_mcp.sync import _parse_retry_after
+        from remarkable_mcp.transports.sync import _parse_retry_after
 
         resp = Mock()
         resp.headers = {"Retry-After": "7"}
@@ -2890,7 +2890,7 @@ class TestRetryBackoff:
         from datetime import datetime, timedelta, timezone
         from email.utils import format_datetime
 
-        from remarkable_mcp.sync import MAX_RETRY_DELAY, _parse_retry_after
+        from remarkable_mcp.transports.sync import MAX_RETRY_DELAY, _parse_retry_after
 
         future = datetime.now(timezone.utc) + timedelta(hours=1)
         resp = Mock()
@@ -2900,7 +2900,7 @@ class TestRetryBackoff:
 
     def test_parse_retry_after_http_date_past_returns_none(self):
         """An HTTP-date already in the past yields None (fall back to backoff)."""
-        from remarkable_mcp.sync import _parse_retry_after
+        from remarkable_mcp.transports.sync import _parse_retry_after
 
         resp = Mock()
         resp.headers = {"Retry-After": "Wed, 21 Oct 2020 07:28:00 GMT"}
@@ -2908,7 +2908,7 @@ class TestRetryBackoff:
 
     def test_parse_retry_after_invalid_and_missing_return_none(self):
         """Garbage or missing Retry-After yields None."""
-        from remarkable_mcp.sync import _parse_retry_after
+        from remarkable_mcp.transports.sync import _parse_retry_after
 
         garbage = Mock()
         garbage.headers = {"Retry-After": "soon-ish"}
@@ -2918,14 +2918,14 @@ class TestRetryBackoff:
         missing.headers = {}
         assert _parse_retry_after(missing) is None
 
-    @patch("remarkable_mcp.sync.time.sleep")
-    @patch("remarkable_mcp.sync._issue_request")
+    @patch("remarkable_mcp.transports.sync.time.sleep")
+    @patch("remarkable_mcp.transports.sync._issue_request")
     def test_retry_after_http_date_honoured_through_wrapper(self, mock_request, mock_sleep):
         """A 429 with an HTTP-date Retry-After drives the backoff sleep."""
         from datetime import datetime, timedelta, timezone
         from email.utils import format_datetime
 
-        from remarkable_mcp.sync import MAX_RETRY_DELAY, _http_request_with_retry
+        from remarkable_mcp.transports.sync import MAX_RETRY_DELAY, _http_request_with_retry
 
         future = datetime.now(timezone.utc) + timedelta(hours=1)
         rate_limited = Mock()
@@ -2952,7 +2952,7 @@ class TestWriteTools:
 
     def test_write_enabled_default_on(self):
         """write_enabled() is True by default (write is the default mode)."""
-        from remarkable_mcp.write_tools import read_only_enabled, write_enabled
+        from remarkable_mcp.core.write_tools import read_only_enabled, write_enabled
 
         old = os.environ.pop("REMARKABLE_READ_ONLY", None)
         try:
@@ -2964,7 +2964,7 @@ class TestWriteTools:
 
     def test_read_only_env_var_disables_write(self):
         """REMARKABLE_READ_ONLY disables write tools; falsy/unset leaves them on."""
-        from remarkable_mcp.write_tools import read_only_enabled, write_enabled
+        from remarkable_mcp.core.write_tools import read_only_enabled, write_enabled
 
         old = os.environ.get("REMARKABLE_READ_ONLY")
         try:
@@ -2985,7 +2985,7 @@ class TestWriteTools:
 
     def test_legacy_write_env_var_is_noop(self):
         """The legacy REMARKABLE_ENABLE_WRITE var no longer affects write_enabled()."""
-        from remarkable_mcp.write_tools import write_enabled
+        from remarkable_mcp.core.write_tools import write_enabled
 
         old_enable = os.environ.get("REMARKABLE_ENABLE_WRITE")
         old_ro = os.environ.pop("REMARKABLE_READ_ONLY", None)
@@ -3010,7 +3010,7 @@ class TestWriteTools:
         """In read-only mode, _require_write_transport returns an educational error."""
         import json
 
-        from remarkable_mcp.write_tools import _require_write_transport
+        from remarkable_mcp.core.write_tools import _require_write_transport
 
         old = os.environ.get("REMARKABLE_READ_ONLY")
         try:
@@ -3057,7 +3057,7 @@ class TestWriteTools:
     @pytest.mark.asyncio
     async def test_write_tools_registered_when_enabled(self):
         """Write tools register in SSH mode (default-on, re-registered explicitly here)."""
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
@@ -3092,7 +3092,7 @@ class TestWriteTools:
     @pytest.mark.asyncio
     async def test_delete_moves_document_to_trash(self):
         """SSH delete mirrors current-firmware Trash metadata semantics."""
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
@@ -3106,9 +3106,9 @@ class TestWriteTools:
             mock_doc.is_cloud_archived = False
 
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi") as mock_get_rmapi,
-                patch("remarkable_mcp.write_tools._write_metadata") as mock_write_meta,
-                patch("remarkable_mcp.write_tools._restart_xochitl"),
+                patch("remarkable_mcp.core.write_tools.get_rmapi") as mock_get_rmapi,
+                patch("remarkable_mcp.core.write_tools._write_metadata") as mock_write_meta,
+                patch("remarkable_mcp.core.write_tools._restart_xochitl"),
                 patch.dict(
                     os.environ,
                     {"REMARKABLE_USE_SSH": "1", "REMARKABLE_SKIP_CONFIRM": "1"},
@@ -3116,9 +3116,9 @@ class TestWriteTools:
             ):
                 import importlib
 
-                import remarkable_mcp.api
+                import remarkable_mcp.transports.api
 
-                importlib.reload(remarkable_mcp.api)
+                importlib.reload(remarkable_mcp.transports.api)
 
                 try:
                     mock_client = Mock(
@@ -3158,7 +3158,7 @@ class TestWriteTools:
                 finally:
                     if "REMARKABLE_USE_SSH" in os.environ:
                         del os.environ["REMARKABLE_USE_SSH"]
-                    importlib.reload(remarkable_mcp.api)
+                    importlib.reload(remarkable_mcp.transports.api)
         finally:
             for name in [
                 "remarkable_upload",
@@ -3171,7 +3171,7 @@ class TestWriteTools:
 
     @pytest.mark.asyncio
     async def test_permanent_delete_removes_resolved_ssh_entry(self):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
@@ -3196,10 +3196,12 @@ class TestWriteTools:
             )
             mock_client.get_meta_items.return_value = [mock_doc]
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=mock_client),
-                patch("remarkable_mcp.write_tools._permanently_delete_ssh_entry") as mock_purge,
-                patch("remarkable_mcp.write_tools._write_metadata") as mock_write_meta,
-                patch("remarkable_mcp.write_tools._restart_xochitl"),
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=mock_client),
+                patch(
+                    "remarkable_mcp.core.write_tools._permanently_delete_ssh_entry"
+                ) as mock_purge,
+                patch("remarkable_mcp.core.write_tools._write_metadata") as mock_write_meta,
+                patch("remarkable_mcp.core.write_tools._restart_xochitl"),
                 patch.dict(
                     os.environ,
                     {"REMARKABLE_USE_SSH": "1", "REMARKABLE_SKIP_CONFIRM": "1"},
@@ -3227,7 +3229,7 @@ class TestWriteTools:
 
     @pytest.mark.asyncio
     async def test_permanent_delete_rejects_non_empty_folder(self):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
@@ -3257,8 +3259,10 @@ class TestWriteTools:
             )
             mock_client.get_meta_items.return_value = [folder, child]
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=mock_client),
-                patch("remarkable_mcp.write_tools._permanently_delete_ssh_entry") as mock_purge,
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=mock_client),
+                patch(
+                    "remarkable_mcp.core.write_tools._permanently_delete_ssh_entry"
+                ) as mock_purge,
                 patch.dict(
                     os.environ,
                     {"REMARKABLE_USE_SSH": "1", "REMARKABLE_SKIP_CONFIRM": "1"},
@@ -3285,7 +3289,7 @@ class TestWriteTools:
     @pytest.mark.asyncio
     async def test_managed_write_tools_registered_in_cloud_mode(self):
         """Cloud mode now has full write parity: mkdir/move/rename/delete register."""
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         # Cloud mode: neither SSH nor USB web
         env = {k: v for k, v in os.environ.items() if k != "REMARKABLE_USE_SSH"}
@@ -3313,7 +3317,7 @@ class TestWriteTools:
     @pytest.mark.asyncio
     async def test_all_write_tools_have_xml_docstrings(self):
         """Test that all write tools have XML-structured documentation."""
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
@@ -3352,7 +3356,7 @@ class TestWriteTools:
         """Upload in cloud mode dispatches to the cloud client's upload_document."""
         import tempfile
 
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         env = {k: v for k, v in os.environ.items() if k != "REMARKABLE_USE_SSH"}
         env.pop("REMARKABLE_USE_USB_WEB", None)
@@ -3369,7 +3373,7 @@ class TestWriteTools:
                 mock_client.get_meta_items.return_value = []
                 mock_client.upload_document.return_value = mock_doc
 
-                with patch("remarkable_mcp.write_tools.get_rmapi", return_value=mock_client):
+                with patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=mock_client):
                     result = await _call_tool(
                         "remarkable_upload",
                         {"file_path": pdf_path, "document_name": "My Doc"},
@@ -3400,7 +3404,7 @@ class TestWriteTools:
         """orientation reaches upload_document; when omitted it stays portrait."""
         import tempfile
 
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         env = {k: v for k, v in os.environ.items() if k != "REMARKABLE_USE_SSH"}
         env.pop("REMARKABLE_USE_USB_WEB", None)
@@ -3415,7 +3419,7 @@ class TestWriteTools:
                 mock_client.get_meta_items.return_value = []
                 mock_client.upload_document.return_value = Mock(id="new-doc-id")
 
-                with patch("remarkable_mcp.write_tools.get_rmapi", return_value=mock_client):
+                with patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=mock_client):
                     await _call_tool(
                         "remarkable_upload", {"file_path": pdf_path, "orientation": "landscape"}
                     )
@@ -3440,7 +3444,7 @@ class TestWriteTools:
         """An unsupported orientation is refused before anything is uploaded."""
         import tempfile
 
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         env = {k: v for k, v in os.environ.items() if k != "REMARKABLE_USE_SSH"}
         env.pop("REMARKABLE_USE_USB_WEB", None)
@@ -3454,7 +3458,7 @@ class TestWriteTools:
                 mock_client = Mock(spec=["get_meta_items", "upload_document"])
                 mock_client.get_meta_items.return_value = []
 
-                with patch("remarkable_mcp.write_tools.get_rmapi", return_value=mock_client):
+                with patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=mock_client):
                     result = await _call_tool(
                         "remarkable_upload", {"file_path": pdf_path, "orientation": "sideways"}
                     )
@@ -3474,7 +3478,7 @@ class TestWriteTools:
 
     def test_cloud_upload_document_writes_orientation(self):
         """The .content blob carries the requested orientation, portrait by default."""
-        from remarkable_mcp.sync import CloudWriteError, RemarkableClient
+        from remarkable_mcp.transports.sync import CloudWriteError, RemarkableClient
 
         def content_json(**kwargs):
             client = RemarkableClient(user_token="user-token")
@@ -3503,7 +3507,7 @@ class TestWriteTools:
     @pytest.mark.asyncio
     async def test_upload_writes_orientation_to_ssh_content_file(self, tmp_path):
         """SSH uploads add orientation to .content only when one is requested."""
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
@@ -3526,12 +3530,12 @@ class TestWriteTools:
             )
             mock_client.get_meta_items.return_value = []
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=mock_client),
-                patch("remarkable_mcp.write_tools._upload_file_bytes"),
-                patch("remarkable_mcp.write_tools._write_metadata"),
-                patch("remarkable_mcp.write_tools._write_content_file") as mock_content,
-                patch("remarkable_mcp.write_tools._maybe_restart_xochitl", return_value=True),
-                patch("remarkable_mcp.write_tools._update_deferred_ssh_cache"),
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=mock_client),
+                patch("remarkable_mcp.core.write_tools._upload_file_bytes"),
+                patch("remarkable_mcp.core.write_tools._write_metadata"),
+                patch("remarkable_mcp.core.write_tools._write_content_file") as mock_content,
+                patch("remarkable_mcp.core.write_tools._maybe_restart_xochitl", return_value=True),
+                patch("remarkable_mcp.core.write_tools._update_deferred_ssh_cache"),
                 patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
             ):
                 landscape = await _call_tool(
@@ -3556,7 +3560,7 @@ class TestWriteTools:
     @pytest.mark.asyncio
     async def test_mkdir_not_registered_in_usb_web_mode(self):
         """SSH-only write tools must not be exposed in USB web mode (upload-only)."""
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         env = {k: v for k, v in os.environ.items() if k != "REMARKABLE_USE_SSH"}
         env["REMARKABLE_USE_USB_WEB"] = "1"
@@ -3588,7 +3592,7 @@ class TestWriteTools:
         rather than registering the tool everywhere and erroring at call time we
         only expose it in SSH mode.
         """
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         # SSH mode -> author present.
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
@@ -3636,7 +3640,7 @@ class TestMarkdownPDFWriteback:
     def test_renderer_creates_paginated_pdf_without_loading_images(self):
         import pymupdf
 
-        from remarkable_mcp.markdown_pdf import render_markdown_pdf
+        from remarkable_mcp.documents.markdown_pdf import render_markdown_pdf
 
         markdown = (
             "# Report\n\n"
@@ -3657,7 +3661,7 @@ class TestMarkdownPDFWriteback:
             document.close()
 
     def test_empty_markdown_is_rejected(self):
-        from remarkable_mcp.markdown_pdf import render_markdown_pdf
+        from remarkable_mcp.documents.markdown_pdf import render_markdown_pdf
 
         with pytest.raises(ValueError, match="cannot be empty"):
             render_markdown_pdf("  \n")
@@ -3676,7 +3680,7 @@ class TestMarkdownPDFWriteback:
 
         with (
             patch.dict(os.environ, env, clear=True),
-            patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
+            patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
         ):
             result = await _call_tool(
                 "remarkable_markdown_to_pdf",
@@ -3718,12 +3722,12 @@ class TestMarkdownPDFWriteback:
                 {"REMARKABLE_USE_SSH": "1"},
                 clear=True,
             ),
-            patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
-            patch("remarkable_mcp.write_tools._upload_file_bytes"),
-            patch("remarkable_mcp.write_tools._write_metadata"),
-            patch("remarkable_mcp.write_tools._write_content_file"),
+            patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
+            patch("remarkable_mcp.core.write_tools._upload_file_bytes"),
+            patch("remarkable_mcp.core.write_tools._write_metadata"),
+            patch("remarkable_mcp.core.write_tools._write_content_file"),
             patch(
-                "remarkable_mcp.write_tools._maybe_restart_xochitl",
+                "remarkable_mcp.core.write_tools._maybe_restart_xochitl",
                 return_value=False,
             ) as maybe_restart,
         ):
@@ -3743,7 +3747,7 @@ class TestMarkdownPDFWriteback:
         maybe_restart.assert_called_once_with(client, True)
 
     def test_usb_upload_uses_requested_document_name(self):
-        from remarkable_mcp.write_tools import _upload_via_usb_web
+        from remarkable_mcp.core.write_tools import _upload_via_usb_web
 
         response = Mock()
         response.status_code = 200
@@ -3782,9 +3786,9 @@ class TestMarkdownPDFWriteback:
         env["REMARKABLE_USE_USB_WEB"] = "1"
         with (
             patch.dict(os.environ, env, clear=True),
-            patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
+            patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
             patch(
-                "remarkable_mcp.write_tools._upload_via_usb_web",
+                "remarkable_mcp.core.write_tools._upload_via_usb_web",
                 side_effect=capture_upload,
             ),
         ):
@@ -3833,7 +3837,7 @@ class TestCloudWriteDispatch:
 
     @pytest.mark.asyncio
     async def test_cloud_mkdir_dispatch(self):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, self._cloud_env(), clear=True):
             register_write_tools()
@@ -3843,7 +3847,7 @@ class TestCloudWriteDispatch:
                 client = Mock(spec=["get_meta_items", "create_folder"])
                 client.get_meta_items.return_value = []
                 client.create_folder.return_value = new_folder
-                with patch("remarkable_mcp.write_tools.get_rmapi", return_value=client):
+                with patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client):
                     result = await _call_tool("remarkable_mkdir", {"folder_name": "Projects"})
                 data = json.loads(result.content[0].text)
                 assert data["created"] is True
@@ -3855,7 +3859,7 @@ class TestCloudWriteDispatch:
 
     @pytest.mark.asyncio
     async def test_cloud_rename_dispatch(self):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, self._cloud_env(), clear=True):
             register_write_tools()
@@ -3863,7 +3867,7 @@ class TestCloudWriteDispatch:
                 target = self._make_item("doc-1", "Old Name")
                 client = Mock(spec=["get_meta_items", "rename"])
                 client.get_meta_items.return_value = [target]
-                with patch("remarkable_mcp.write_tools.get_rmapi", return_value=client):
+                with patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client):
                     result = await _call_tool(
                         "remarkable_rename",
                         {"document": "Old Name", "new_name": "New Name"},
@@ -3877,7 +3881,7 @@ class TestCloudWriteDispatch:
 
     @pytest.mark.asyncio
     async def test_cloud_move_dispatch(self):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, self._cloud_env(), clear=True):
             register_write_tools()
@@ -3886,7 +3890,7 @@ class TestCloudWriteDispatch:
                 dest = self._make_item("fold-1", "Archive", is_folder=True)
                 client = Mock(spec=["get_meta_items", "move"])
                 client.get_meta_items.return_value = [target, dest]
-                with patch("remarkable_mcp.write_tools.get_rmapi", return_value=client):
+                with patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client):
                     result = await _call_tool(
                         "remarkable_move",
                         {"document": "Report", "dest_folder": "Archive"},
@@ -3900,7 +3904,7 @@ class TestCloudWriteDispatch:
 
     @pytest.mark.asyncio
     async def test_cloud_delete_dispatch(self):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         env = {**self._cloud_env(), "REMARKABLE_SKIP_CONFIRM": "1"}
         with patch.dict(os.environ, env, clear=True):
@@ -3909,7 +3913,7 @@ class TestCloudWriteDispatch:
                 target = self._make_item("doc-1", "Old Notes")
                 client = Mock(spec=["get_meta_items", "delete"])
                 client.get_meta_items.return_value = [target]
-                with patch("remarkable_mcp.write_tools.get_rmapi", return_value=client):
+                with patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client):
                     result = await _call_tool("remarkable_delete", {"document": "Old Notes"})
                 data = json.loads(result.content[0].text)
                 assert data["deleted"] is True
@@ -3921,7 +3925,7 @@ class TestCloudWriteDispatch:
     @pytest.mark.asyncio
     async def test_cloud_delete_refused_without_elicitation(self):
         """Default-on writes: a client that can't confirm must NOT delete silently."""
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         # No REMARKABLE_SKIP_CONFIRM, and the client does not support elicitation.
         env = {k: v for k, v in self._cloud_env().items() if k != "REMARKABLE_SKIP_CONFIRM"}
@@ -3932,9 +3936,9 @@ class TestCloudWriteDispatch:
                 client = Mock(spec=["get_meta_items", "delete"])
                 client.get_meta_items.return_value = [target]
                 with (
-                    patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
+                    patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
                     patch(
-                        "remarkable_mcp.write_tools.client_supports_elicitation",
+                        "remarkable_mcp.core.write_tools.client_supports_elicitation",
                         return_value=False,
                     ),
                 ):
@@ -3948,7 +3952,7 @@ class TestCloudWriteDispatch:
     @pytest.mark.asyncio
     async def test_cloud_delete_skip_confirm_bypasses_elicitation(self):
         """REMARKABLE_SKIP_CONFIRM=1 allows deletes without a prompt (automation)."""
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         env = {**self._cloud_env(), "REMARKABLE_SKIP_CONFIRM": "1"}
         with patch.dict(os.environ, env, clear=True):
@@ -3958,9 +3962,9 @@ class TestCloudWriteDispatch:
                 client = Mock(spec=["get_meta_items", "delete"])
                 client.get_meta_items.return_value = [target]
                 with (
-                    patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
+                    patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
                     patch(
-                        "remarkable_mcp.write_tools.client_supports_elicitation",
+                        "remarkable_mcp.core.write_tools.client_supports_elicitation",
                         return_value=False,
                     ),
                 ):
@@ -3977,7 +3981,7 @@ class TestCloudWriteDispatch:
         from mcp.client import ClientRequestContext
         from mcp.types import ElicitRequestParams, ElicitResult
 
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         async def decline(
             context: ClientRequestContext, params: ElicitRequestParams
@@ -3989,10 +3993,12 @@ class TestCloudWriteDispatch:
             try:
                 client = Mock(spec=["get_meta_items", "delete"])
                 with (
-                    patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
-                    patch("remarkable_mcp.resources.start_background_loader", return_value=None),
+                    patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
                     patch(
-                        "remarkable_mcp.resources.stop_background_loader",
+                        "remarkable_mcp.core.resources.start_background_loader", return_value=None
+                    ),
+                    patch(
+                        "remarkable_mcp.core.resources.stop_background_loader",
                         new_callable=AsyncMock,
                     ),
                 ):
@@ -4018,7 +4024,7 @@ class TestConcurrentToolDispatch:
     mocked client and asserts that two concurrent calls overlap.
     """
 
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_concurrent_browse_calls_overlap(self, mock_get_rmapi):
         import asyncio
         import time
@@ -4060,10 +4066,10 @@ class TestCloudBlobCache:
         response.raise_for_status = Mock()
         return response
 
-    @patch("remarkable_mcp.sync._http_request_with_retry")
+    @patch("remarkable_mcp.transports.sync._http_request_with_retry")
     def test_get_file_caches_by_hash(self, mock_request):
         """A second fetch of the same hash is served from cache (no new request)."""
-        from remarkable_mcp.sync import RemarkableClient
+        from remarkable_mcp.transports.sync import RemarkableClient
 
         mock_request.return_value = self._response(content=b"blob-bytes")
         client = RemarkableClient(user_token="user-token")
@@ -4075,14 +4081,14 @@ class TestCloudBlobCache:
         assert second == b"blob-bytes"
         assert mock_request.call_count == 1
 
-    @patch("remarkable_mcp.sync._http_request_with_retry")
+    @patch("remarkable_mcp.transports.sync._http_request_with_retry")
     def test_different_hash_is_refetched(self, mock_request):
         """A changed document yields a new hash, which is fetched fresh.
 
         This is what makes the cache invalidation-safe: blobs are keyed by their
         content hash, so a modified document always produces a different key.
         """
-        from remarkable_mcp.sync import RemarkableClient
+        from remarkable_mcp.transports.sync import RemarkableClient
 
         mock_request.side_effect = [
             self._response(content=b"old-content"),
@@ -4094,10 +4100,10 @@ class TestCloudBlobCache:
         assert client._get_file("hash-new", "doc.content") == b"new-content"
         assert mock_request.call_count == 2
 
-    @patch("remarkable_mcp.sync._http_request_with_retry")
+    @patch("remarkable_mcp.transports.sync._http_request_with_retry")
     def test_cache_can_be_disabled(self, mock_request, monkeypatch):
         """REMARKABLE_DISABLE_CACHE forces every fetch to hit the network."""
-        from remarkable_mcp.sync import RemarkableClient
+        from remarkable_mcp.transports.sync import RemarkableClient
 
         monkeypatch.setenv("REMARKABLE_DISABLE_CACHE", "1")
         mock_request.side_effect = [
@@ -4110,10 +4116,10 @@ class TestCloudBlobCache:
         client._get_file("hash-a", "a.docSchema")
         assert mock_request.call_count == 2
 
-    @patch("remarkable_mcp.sync._http_request_with_retry")
+    @patch("remarkable_mcp.transports.sync._http_request_with_retry")
     def test_large_blobs_are_not_cached(self, mock_request, monkeypatch):
         """Blobs above the size threshold are streamed through, not cached."""
-        from remarkable_mcp.sync import RemarkableClient
+        from remarkable_mcp.transports.sync import RemarkableClient
 
         monkeypatch.setenv("REMARKABLE_CACHE_MAX_BLOB", "8")
         big = b"x" * 64
@@ -4133,7 +4139,7 @@ class TestSessionPooling:
 
     def test_get_session_is_thread_local_and_reused(self):
         """The same thread reuses one pooled session across calls."""
-        from remarkable_mcp import sync
+        from remarkable_mcp.transports import sync
 
         sync._thread_local.__dict__.pop("session", None)
         try:
@@ -4146,11 +4152,11 @@ class TestSessionPooling:
 
     def test_issue_request_uses_pooled_session(self):
         """_issue_request dispatches through the thread-local session."""
-        from remarkable_mcp import sync
+        from remarkable_mcp.transports import sync
 
         fake_session = Mock()
         fake_session.request.return_value = "resp"
-        with patch("remarkable_mcp.sync._get_session", return_value=fake_session):
+        with patch("remarkable_mcp.transports.sync._get_session", return_value=fake_session):
             result = sync._issue_request("GET", "https://example.com", timeout=5)
         assert result == "resp"
         fake_session.request.assert_called_once_with("GET", "https://example.com", timeout=5)
@@ -4167,12 +4173,12 @@ class TestParallelDownload:
         response.raise_for_status = Mock()
         return response
 
-    @patch("remarkable_mcp.sync._http_request_with_retry")
+    @patch("remarkable_mcp.transports.sync._http_request_with_retry")
     def test_download_preserves_blob_order(self, mock_request):
         """Parallel fetches still assemble the zip in original blob order."""
         import io
 
-        from remarkable_mcp.sync import Document, RemarkableClient
+        from remarkable_mcp.transports.sync import Document, RemarkableClient
 
         doc_id = "doc-1"
         index = "3\n" + "".join(f"hash-{i}:0:{doc_id}/page-{i}.rm:0:5\n" for i in range(10))
@@ -4206,7 +4212,7 @@ class TestBackgroundLoaderSingleFetch:
     async def test_loader_fetches_once_without_limit(self, monkeypatch):
         import asyncio
 
-        import remarkable_mcp.resources as resources
+        import remarkable_mcp.core.resources as resources
 
         fake_client = Mock()
         fake_client.get_meta_items.return_value = [
@@ -4215,8 +4221,8 @@ class TestBackgroundLoaderSingleFetch:
             Mock(is_folder=True),
         ]
 
-        monkeypatch.setattr("remarkable_mcp.api.get_rmapi", lambda: fake_client)
-        monkeypatch.setattr("remarkable_mcp.api.get_items_by_id", lambda items: {})
+        monkeypatch.setattr("remarkable_mcp.transports.api.get_rmapi", lambda: fake_client)
+        monkeypatch.setattr("remarkable_mcp.transports.api.get_items_by_id", lambda items: {})
 
         registered = []
         monkeypatch.setattr(
@@ -4237,14 +4243,14 @@ class TestCloudClientCache:
     """The cloud client must be cached per process (one token renewal)."""
 
     def test_environment_token_does_not_create_token_file(self, monkeypatch, tmp_path):
-        import remarkable_mcp.api as api
+        import remarkable_mcp.transports.api as api
 
         token = '{"devicetoken": "environment-token"}'
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("REMARKABLE_TOKEN", token)
         monkeypatch.setattr(api, "REMARKABLE_TOKEN", token)
         loader = Mock(return_value=Mock(name="cloud"))
-        monkeypatch.setattr("remarkable_mcp.sync.load_client_from_token", loader)
+        monkeypatch.setattr("remarkable_mcp.transports.sync.load_client_from_token", loader)
 
         api.reset_client_cache()
         try:
@@ -4255,7 +4261,7 @@ class TestCloudClientCache:
             api.reset_client_cache()
 
     def test_environment_token_does_not_overwrite_token_file(self, monkeypatch, tmp_path):
-        import remarkable_mcp.api as api
+        import remarkable_mcp.transports.api as api
 
         saved_token = '{"devicetoken": "saved-token"}'
         environment_token = '{"devicetoken": "environment-token"}'
@@ -4265,7 +4271,7 @@ class TestCloudClientCache:
         monkeypatch.setenv("REMARKABLE_TOKEN", environment_token)
         monkeypatch.setattr(api, "REMARKABLE_TOKEN", environment_token)
         loader = Mock(return_value=Mock(name="cloud"))
-        monkeypatch.setattr("remarkable_mcp.sync.load_client_from_token", loader)
+        monkeypatch.setattr("remarkable_mcp.transports.sync.load_client_from_token", loader)
 
         api.reset_client_cache()
         try:
@@ -4276,7 +4282,7 @@ class TestCloudClientCache:
             api.reset_client_cache()
 
     def test_cloud_client_cached_and_resettable(self, monkeypatch, tmp_path):
-        import remarkable_mcp.api as api
+        import remarkable_mcp.transports.api as api
 
         # Force cloud mode and redirect HOME so we never touch the real ~/.rmapi.
         monkeypatch.setattr(api.Path, "home", classmethod(lambda cls: tmp_path))
@@ -4291,7 +4297,7 @@ class TestCloudClientCache:
             created.append(client)
             return client
 
-        monkeypatch.setattr("remarkable_mcp.sync.load_client_from_token", fake_loader)
+        monkeypatch.setattr("remarkable_mcp.transports.sync.load_client_from_token", fake_loader)
 
         api.reset_client_cache()
         first = api.get_rmapi()
@@ -4317,12 +4323,14 @@ class TestCloudStartupFallback:
 
     def _setup_cloud(self, monkeypatch, tmp_path, token):
         """Redirect HOME, set the cloud token, and stub the cloud client loader."""
-        import remarkable_mcp.api as api
+        import remarkable_mcp.transports.api as api
 
         monkeypatch.setattr(api.Path, "home", classmethod(lambda cls: tmp_path))
         monkeypatch.setattr(api, "REMARKABLE_TOKEN", token)
         cloud = Mock(name="cloud")
-        monkeypatch.setattr("remarkable_mcp.sync.load_client_from_token", lambda token_json: cloud)
+        monkeypatch.setattr(
+            "remarkable_mcp.transports.sync.load_client_from_token", lambda token_json: cloud
+        )
         return api, cloud
 
     def test_usb_unreachable_falls_back_to_cloud(self, monkeypatch, tmp_path):
@@ -4338,7 +4346,7 @@ class TestCloudStartupFallback:
             creations.append(1)
             return device
 
-        monkeypatch.setattr("remarkable_mcp.usb_web.create_usb_web_client", factory)
+        monkeypatch.setattr("remarkable_mcp.transports.usb_web.create_usb_web_client", factory)
 
         api.reset_client_cache()
         try:
@@ -4362,7 +4370,7 @@ class TestCloudStartupFallback:
         monkeypatch.setattr(api, "REMARKABLE_DISABLE_CLOUD_FALLBACK", False)
 
         device = self._device_client(reachable=False)
-        monkeypatch.setattr("remarkable_mcp.ssh.create_ssh_client", lambda: device)
+        monkeypatch.setattr("remarkable_mcp.transports.ssh.create_ssh_client", lambda: device)
 
         api.reset_client_cache()
         try:
@@ -4378,7 +4386,9 @@ class TestCloudStartupFallback:
         monkeypatch.setattr(api, "REMARKABLE_DISABLE_CLOUD_FALLBACK", False)
 
         device = self._device_client(reachable=True)
-        monkeypatch.setattr("remarkable_mcp.usb_web.create_usb_web_client", lambda: device)
+        monkeypatch.setattr(
+            "remarkable_mcp.transports.usb_web.create_usb_web_client", lambda: device
+        )
 
         api.reset_client_cache()
         try:
@@ -4395,7 +4405,9 @@ class TestCloudStartupFallback:
         monkeypatch.setattr(api, "REMARKABLE_DISABLE_CLOUD_FALLBACK", False)
 
         device = self._device_client(reachable=False)
-        monkeypatch.setattr("remarkable_mcp.usb_web.create_usb_web_client", lambda: device)
+        monkeypatch.setattr(
+            "remarkable_mcp.transports.usb_web.create_usb_web_client", lambda: device
+        )
 
         api.reset_client_cache()
         try:
@@ -4415,7 +4427,7 @@ class TestCloudStartupFallback:
         monkeypatch.setattr(api, "REMARKABLE_DISABLE_CLOUD_FALLBACK", True)
 
         device = self._device_client(reachable=False)
-        monkeypatch.setattr("remarkable_mcp.ssh.create_ssh_client", lambda: device)
+        monkeypatch.setattr("remarkable_mcp.transports.ssh.create_ssh_client", lambda: device)
 
         api.reset_client_cache()
         try:
@@ -4447,7 +4459,7 @@ class TestSSHCacheConcurrency:
             self._lock.release()
 
     def test_metadata_load_is_single_flight(self):
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         client = SSHClient()
         lock = self.AttemptLock()
@@ -4480,7 +4492,7 @@ class TestSSHCacheConcurrency:
         assert call_count == 1
 
     def test_empty_metadata_result_is_cached(self):
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         client = SSHClient()
         call_count = 0
@@ -4498,7 +4510,7 @@ class TestSSHCacheConcurrency:
         assert call_count == 1
 
     def test_file_type_reader_waits_for_batch_preload(self):
-        from remarkable_mcp.ssh import Document, SSHClient
+        from remarkable_mcp.transports.ssh import Document, SSHClient
 
         client = SSHClient()
         lock = self.AttemptLock()
@@ -4536,7 +4548,7 @@ class TestSSHCacheConcurrency:
         assert individual_downloads == 0
 
     def test_failed_file_type_preload_remains_retryable(self):
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         client = SSHClient()
         attempts = 0
@@ -4559,7 +4571,7 @@ class TestSSHCacheConcurrency:
     async def test_cached_metadata_bypasses_busy_dispatcher(self):
         import asyncio
 
-        from remarkable_mcp.ssh import Document, SSHClient
+        from remarkable_mcp.transports.ssh import Document, SSHClient
 
         client = SSHClient()
         doc = Document(id="doc-1", hash="doc-1", name="One", doc_type="DocumentType")
@@ -4585,8 +4597,8 @@ class TestSSHCacheConcurrency:
             client.close()
 
     def test_stale_metadata_fill_cannot_repopulate_after_invalidation(self):
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.write_tools import _invalidate_client_cache
+        from remarkable_mcp.core.write_tools import _invalidate_client_cache
+        from remarkable_mcp.transports.ssh import SSHClient
 
         client = SSHClient()
         load_started = threading.Event()
@@ -4613,7 +4625,7 @@ class TestSSHCacheConcurrency:
     def test_file_type_preload_serializes_other_ssh_io(self):
         import time
 
-        from remarkable_mcp.ssh import Document, SSHClient
+        from remarkable_mcp.transports.ssh import Document, SSHClient
 
         client = SSHClient()
         preload_started = threading.Event()
@@ -4646,7 +4658,7 @@ class TestSSHCacheConcurrency:
     def test_upload_serializes_with_file_type_preload(self, monkeypatch, tmp_path):
         import time
 
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         client = SSHClient()
         preload_started = threading.Event()
@@ -4682,7 +4694,7 @@ class TestSSHCacheConcurrency:
 
 class TestOperationDispatcher:
     def test_fifo_order_and_single_concurrency(self):
-        from remarkable_mcp.operation_queue import OperationDispatcher
+        from remarkable_mcp.transports.operation_queue import OperationDispatcher
 
         dispatcher = OperationDispatcher(name="test", max_concurrency=1)
         first_started = threading.Event()
@@ -4719,7 +4731,7 @@ class TestOperationDispatcher:
             dispatcher.close()
 
     def test_cancelled_queued_job_never_runs(self):
-        from remarkable_mcp.operation_queue import (
+        from remarkable_mcp.transports.operation_queue import (
             OperationCancelled,
             OperationDispatcher,
         )
@@ -4755,7 +4767,7 @@ class TestOperationDispatcher:
         import asyncio
         import time
 
-        from remarkable_mcp.operation_queue import OperationDispatcher
+        from remarkable_mcp.transports.operation_queue import OperationDispatcher
 
         dispatcher = OperationDispatcher(name="test", max_concurrency=1)
         first_started = threading.Event()
@@ -4789,7 +4801,7 @@ class TestOperationDispatcher:
             dispatcher.close()
 
     def test_close_cancels_queued_job_without_starting_it(self):
-        from remarkable_mcp.operation_queue import (
+        from remarkable_mcp.transports.operation_queue import (
             OperationDispatcher,
             OperationQueueClosed,
         )
@@ -4842,7 +4854,7 @@ class TestSSHReliabilityPolicy:
         ],
     )
     def test_pre_execution_classifier(self, stderr, expected):
-        from remarkable_mcp.ssh_reliability import classify_pre_execution_failure
+        from remarkable_mcp.transports.ssh_reliability import classify_pre_execution_failure
 
         assert (
             classify_pre_execution_failure(
@@ -4855,7 +4867,7 @@ class TestSSHReliabilityPolicy:
         )
 
     def test_execution_marker_forbids_retry(self):
-        from remarkable_mcp.ssh_reliability import classify_pre_execution_failure
+        from remarkable_mcp.transports.ssh_reliability import classify_pre_execution_failure
 
         assert (
             classify_pre_execution_failure(
@@ -4868,8 +4880,8 @@ class TestSSHReliabilityPolicy:
         )
 
     def test_successful_process_wins_cancellation_race(self):
-        import remarkable_mcp.ssh as ssh_mod
-        from remarkable_mcp.ssh import SSHClient
+        import remarkable_mcp.transports.ssh as ssh_mod
+        from remarkable_mcp.transports.ssh import SSHClient
 
         client = SSHClient()
         try:
@@ -4885,8 +4897,8 @@ class TestSSHReliabilityPolicy:
             client.close()
 
     def test_pre_execution_failure_retries_then_succeeds(self, monkeypatch):
-        import remarkable_mcp.ssh as ssh_mod
-        from remarkable_mcp.ssh import SSHClient
+        import remarkable_mcp.transports.ssh as ssh_mod
+        from remarkable_mcp.transports.ssh import SSHClient
 
         class Process:
             def __init__(self, returncode, stdout, stderr):
@@ -4922,9 +4934,9 @@ class TestSSHReliabilityPolicy:
             client.close()
 
     def test_ambiguous_exit_is_not_retried(self, monkeypatch):
-        import remarkable_mcp.ssh as ssh_mod
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.ssh_reliability import SSHExecutionUnknownError
+        import remarkable_mcp.transports.ssh as ssh_mod
+        from remarkable_mcp.transports.ssh import SSHClient
+        from remarkable_mcp.transports.ssh_reliability import SSHExecutionUnknownError
 
         class Process:
             returncode = 255
@@ -4957,8 +4969,8 @@ class TestSSHReliabilityPolicy:
         import asyncio
         import time
 
-        import remarkable_mcp.ssh as ssh_mod
-        from remarkable_mcp.ssh import SSHClient
+        import remarkable_mcp.transports.ssh as ssh_mod
+        from remarkable_mcp.transports.ssh import SSHClient
 
         class Process:
             returncode = 255
@@ -5007,16 +5019,18 @@ class TestSSHReliabilityPolicy:
 
 class TestSSHRefreshCoordinator:
     def test_uncancel_helper_is_python_310_compatible(self):
-        from remarkable_mcp.ssh_reliability import _uncancel_current_task
+        from remarkable_mcp.transports.ssh_reliability import _uncancel_current_task
 
-        with patch("remarkable_mcp.ssh_reliability.asyncio.current_task", return_value=object()):
+        with patch(
+            "remarkable_mcp.transports.ssh_reliability.asyncio.current_task", return_value=object()
+        ):
             _uncancel_current_task()
 
     @pytest.mark.asyncio
     async def test_concurrent_writes_share_one_refresh(self, monkeypatch):
         import asyncio
 
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         monkeypatch.setenv("REMARKABLE_SSH_REFRESH_DEBOUNCE", "0.01")
         coordinator = SSHRefreshCoordinator()
@@ -5053,7 +5067,7 @@ class TestSSHRefreshCoordinator:
 
     @pytest.mark.asyncio
     async def test_deferred_write_stays_pending_without_refresh(self):
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         coordinator = SSHRefreshCoordinator()
         refreshes = 0
@@ -5075,7 +5089,7 @@ class TestSSHRefreshCoordinator:
 
     @pytest.mark.asyncio
     async def test_ambiguous_deferred_write_retains_recovery_refresh(self):
-        from remarkable_mcp.ssh_reliability import (
+        from remarkable_mcp.transports.ssh_reliability import (
             SSHExecutionUnknownError,
             SSHRefreshCoordinator,
         )
@@ -5102,7 +5116,7 @@ class TestSSHRefreshCoordinator:
 
     @pytest.mark.asyncio
     async def test_pre_execution_deferred_failure_does_not_require_refresh(self):
-        from remarkable_mcp.ssh_reliability import (
+        from remarkable_mcp.transports.ssh_reliability import (
             SSHPreExecutionError,
             SSHRefreshCoordinator,
         )
@@ -5136,8 +5150,8 @@ class TestSSHRefreshCoordinator:
     async def test_cancel_dirty_is_cumulative_across_multi_step_operation(self):
         import asyncio
 
-        from remarkable_mcp.operation_queue import OperationDispatcher
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.operation_queue import OperationDispatcher
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         dispatcher = OperationDispatcher(name="cumulative-dirty")
         coordinator = SSHRefreshCoordinator()
@@ -5170,8 +5184,8 @@ class TestSSHRefreshCoordinator:
 
     @pytest.mark.asyncio
     async def test_partial_error_response_retains_pending_refresh(self):
-        from remarkable_mcp.operation_queue import OperationDispatcher
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.operation_queue import OperationDispatcher
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         dispatcher = OperationDispatcher(name="partial-error")
         coordinator = SSHRefreshCoordinator()
@@ -5196,7 +5210,7 @@ class TestSSHRefreshCoordinator:
 
     @pytest.mark.asyncio
     async def test_refresh_failure_retains_dirty_state_for_explicit_recovery(self):
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         coordinator = SSHRefreshCoordinator()
 
@@ -5221,7 +5235,7 @@ class TestSSHRefreshCoordinator:
 
     @pytest.mark.asyncio
     async def test_first_explicit_refresh_treats_process_state_as_unknown(self):
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         coordinator = SSHRefreshCoordinator()
         refresh = AsyncMock()
@@ -5240,7 +5254,7 @@ class TestSSHRefreshCoordinator:
     async def test_deferred_write_during_refresh_keeps_new_epoch_pending(self):
         import asyncio
 
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         coordinator = SSHRefreshCoordinator()
         started = asyncio.Event()
@@ -5284,7 +5298,7 @@ class TestSSHRefreshCoordinator:
     ):
         import asyncio
 
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         monkeypatch.setenv("REMARKABLE_SSH_REFRESH_DEBOUNCE", "0.01")
         coordinator = SSHRefreshCoordinator()
@@ -5327,7 +5341,7 @@ class TestSSHRefreshCoordinator:
     async def test_not_started_cancellation_does_not_refresh(self):
         import asyncio
 
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         coordinator = SSHRefreshCoordinator()
         refreshes = 0
@@ -5352,7 +5366,7 @@ class TestSSHRefreshCoordinator:
     async def test_follower_cancellation_does_not_cancel_shared_generation(self, monkeypatch):
         import asyncio
 
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         monkeypatch.setenv("REMARKABLE_SSH_REFRESH_DEBOUNCE", "0.01")
         coordinator = SSHRefreshCoordinator()
@@ -5397,7 +5411,7 @@ class TestSSHRefreshCoordinator:
     ):
         import asyncio
 
-        from remarkable_mcp.ssh_reliability import SSHRefreshCoordinator
+        from remarkable_mcp.transports.ssh_reliability import SSHRefreshCoordinator
 
         coordinator = SSHRefreshCoordinator()
         started = asyncio.Event()
@@ -5431,7 +5445,7 @@ class TestSSHRefreshCoordinator:
     async def test_close_waits_for_superseded_generation(self, monkeypatch):
         import asyncio
 
-        from remarkable_mcp.ssh_reliability import (
+        from remarkable_mcp.transports.ssh_reliability import (
             SSHExecutionUnknownError,
             SSHJobCancelled,
             SSHRefreshCoordinator,
@@ -5528,7 +5542,7 @@ class TestSSHShutdownCancellation:
     async def _start_write(client, process):
         import asyncio
 
-        from remarkable_mcp.write_tools import _refresh_ssh_client
+        from remarkable_mcp.core.write_tools import _refresh_ssh_client
 
         task = asyncio.create_task(
             client._refresh_coordinator.run_write(
@@ -5546,7 +5560,7 @@ class TestSSHShutdownCancellation:
 
     @staticmethod
     def _cached_client(monkeypatch):
-        from remarkable_mcp.ssh import Document, SSHClient
+        from remarkable_mcp.transports.ssh import Document, SSHClient
 
         monkeypatch.setenv("REMARKABLE_SSH_REFRESH_DEBOUNCE", "0")
         monkeypatch.setenv("REMARKABLE_SSH_SHUTDOWN_TIMEOUT", "1")
@@ -5560,14 +5574,14 @@ class TestSSHShutdownCancellation:
 
     @pytest.mark.asyncio
     async def test_aclose_cancels_before_marker_without_refresh(self, monkeypatch):
-        import remarkable_mcp.ssh as ssh_mod
-        from remarkable_mcp.ssh_reliability import SSHJobCancelled
+        import remarkable_mcp.transports.ssh as ssh_mod
+        from remarkable_mcp.transports.ssh_reliability import SSHJobCancelled
 
         client = self._cached_client(monkeypatch)
         process = self.Process(b"")
         with (
             patch.object(ssh_mod.subprocess, "Popen", return_value=process),
-            patch("remarkable_mcp.write_tools._restart_xochitl") as restart,
+            patch("remarkable_mcp.core.write_tools._restart_xochitl") as restart,
         ):
             task = await self._start_write(client, process)
             await client.aclose()
@@ -5580,16 +5594,16 @@ class TestSSHShutdownCancellation:
 
     @pytest.mark.asyncio
     async def test_aclose_refreshes_once_after_marker_and_invalidates_cache(self, monkeypatch):
-        import remarkable_mcp.api as api
-        import remarkable_mcp.ssh as ssh_mod
-        from remarkable_mcp.ssh_reliability import SSHExecutionUnknownError
+        import remarkable_mcp.transports.api as api
+        import remarkable_mcp.transports.ssh as ssh_mod
+        from remarkable_mcp.transports.ssh_reliability import SSHExecutionUnknownError
 
         client = self._cached_client(monkeypatch)
         marker = ssh_mod._REMOTE_EXECUTION_MARKER
         process = self.Process(marker + b"\n")
         with (
             patch.object(ssh_mod.subprocess, "Popen", return_value=process),
-            patch("remarkable_mcp.write_tools._restart_xochitl") as restart,
+            patch("remarkable_mcp.core.write_tools._restart_xochitl") as restart,
             patch.object(api, "_device_client", client),
         ):
             task = await self._start_write(client, process)
@@ -5613,14 +5627,14 @@ class TestSSHShutdownCancellation:
     async def test_close_requires_later_refresh_after_marker(self, monkeypatch):
         import asyncio
 
-        import remarkable_mcp.ssh as ssh_mod
-        from remarkable_mcp.operation_queue import OperationQueueClosed
+        import remarkable_mcp.transports.ssh as ssh_mod
+        from remarkable_mcp.transports.operation_queue import OperationQueueClosed
 
         client = self._cached_client(monkeypatch)
         process = self.Process(ssh_mod._REMOTE_EXECUTION_MARKER + b"\n")
         with (
             patch.object(ssh_mod.subprocess, "Popen", return_value=process),
-            patch("remarkable_mcp.write_tools._restart_xochitl") as restart,
+            patch("remarkable_mcp.core.write_tools._restart_xochitl") as restart,
         ):
             task = await self._start_write(client, process)
             await asyncio.to_thread(client.close)
@@ -5633,14 +5647,14 @@ class TestSSHShutdownCancellation:
 
     @pytest.mark.asyncio
     async def test_aclose_retains_dirty_state_when_refresh_fails(self, monkeypatch):
-        import remarkable_mcp.ssh as ssh_mod
+        import remarkable_mcp.transports.ssh as ssh_mod
 
         client = self._cached_client(monkeypatch)
         process = self.Process(ssh_mod._REMOTE_EXECUTION_MARKER + b"\n")
         with (
             patch.object(ssh_mod.subprocess, "Popen", return_value=process),
             patch(
-                "remarkable_mcp.write_tools._restart_xochitl",
+                "remarkable_mcp.core.write_tools._restart_xochitl",
                 side_effect=RuntimeError("refresh disconnected"),
             ) as restart,
         ):
@@ -5659,14 +5673,14 @@ class TestSSHShutdownCancellation:
     async def test_task_cancellation_stays_cancelled_after_safety_refresh(self, monkeypatch):
         import asyncio
 
-        import remarkable_mcp.ssh as ssh_mod
+        import remarkable_mcp.transports.ssh as ssh_mod
 
         client = self._cached_client(monkeypatch)
         process = self.Process(ssh_mod._REMOTE_EXECUTION_MARKER + b"\n")
         try:
             with (
                 patch.object(ssh_mod.subprocess, "Popen", return_value=process),
-                patch("remarkable_mcp.write_tools._restart_xochitl") as restart,
+                patch("remarkable_mcp.core.write_tools._restart_xochitl") as restart,
             ):
                 task = await self._start_write(client, process)
                 task.cancel()
@@ -5683,14 +5697,14 @@ class TestSSHShutdownCancellation:
     async def test_task_cancellation_before_marker_does_not_refresh(self, monkeypatch):
         import asyncio
 
-        import remarkable_mcp.ssh as ssh_mod
+        import remarkable_mcp.transports.ssh as ssh_mod
 
         client = self._cached_client(monkeypatch)
         process = self.Process(b"")
         try:
             with (
                 patch.object(ssh_mod.subprocess, "Popen", return_value=process),
-                patch("remarkable_mcp.write_tools._restart_xochitl") as restart,
+                patch("remarkable_mcp.core.write_tools._restart_xochitl") as restart,
             ):
                 task = await self._start_write(client, process)
                 task.cancel()
@@ -5707,7 +5721,7 @@ class TestSSHShutdownCancellation:
     async def test_refresh_failure_does_not_replace_task_cancellation(self, monkeypatch):
         import asyncio
 
-        from remarkable_mcp.write_tools import _refresh_ssh_client
+        from remarkable_mcp.core.write_tools import _refresh_ssh_client
 
         client = self._cached_client(monkeypatch)
         refresh_started = threading.Event()
@@ -5720,7 +5734,7 @@ class TestSSHShutdownCancellation:
 
         try:
             with patch(
-                "remarkable_mcp.write_tools._restart_xochitl",
+                "remarkable_mcp.core.write_tools._restart_xochitl",
                 side_effect=failed_refresh,
             ) as restart:
                 task = asyncio.create_task(
@@ -5785,7 +5799,7 @@ async def _async_value(value):
 
 class TestExtractionCacheGeneration:
     def test_inflight_result_cannot_repopulate_after_mutation(self):
-        from remarkable_mcp.extract import (
+        from remarkable_mcp.documents.extract import (
             _cache_extraction_result_if_current,
             _cache_token,
             clear_extraction_cache,
@@ -5808,7 +5822,7 @@ class TestExtractionCacheGeneration:
         assert get_cached_ocr_result(doc_id, include_ocr=False) is None
 
     def test_current_generation_can_cache_result(self):
-        from remarkable_mcp.extract import (
+        from remarkable_mcp.documents.extract import (
             _cache_extraction_result_if_current,
             _cache_token,
             clear_extraction_cache,
@@ -5894,7 +5908,7 @@ class TestSSHKeyAuth:
 
     def _capture(self, monkeypatch, *, text):
         """Patch the process seam and capture the argv it receives."""
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         captured = {}
 
@@ -5907,7 +5921,7 @@ class TestSSHKeyAuth:
         return captured
 
     def test_explicit_key_pins_identity_and_ignores_agent(self, monkeypatch):
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         captured = self._capture(monkeypatch, text=True)
         client = SSHClient(key_path="~/.ssh/id_ed25519")
@@ -5925,7 +5939,7 @@ class TestSSHKeyAuth:
         assert "echo ok" in argv[-1]
 
     def test_keyless_default_has_batchmode_but_no_identity(self, monkeypatch):
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         captured = self._capture(monkeypatch, text=True)
         client = SSHClient()
@@ -5938,7 +5952,7 @@ class TestSSHKeyAuth:
         assert "sshpass" not in argv
 
     def test_fresh_probe_disables_ssh_multiplexing(self, monkeypatch):
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         captured = self._capture(monkeypatch, text=True)
         client = SSHClient()
@@ -5950,8 +5964,8 @@ class TestSSHKeyAuth:
         assert "ControlPersist=no" in argv
 
     def test_effective_host_resolves_ssh_config_alias_once(self, monkeypatch):
-        import remarkable_mcp.ssh as ssh_mod
-        from remarkable_mcp.ssh import SSHClient
+        import remarkable_mcp.transports.ssh as ssh_mod
+        from remarkable_mcp.transports.ssh import SSHClient
 
         resolved = Mock(
             returncode=0,
@@ -5968,7 +5982,7 @@ class TestSSHKeyAuth:
         assert run.call_args.args[0][-1] == "root@remarkable"
 
     def test_password_uses_sshpass_without_batchmode(self, monkeypatch):
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         captured = self._capture(monkeypatch, text=True)
         client = SSHClient(password="secret")
@@ -5981,7 +5995,7 @@ class TestSSHKeyAuth:
         assert "IdentitiesOnly=yes" not in argv
 
     def test_scp_download_also_pins_identity(self, monkeypatch):
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         captured = self._capture(monkeypatch, text=False)
         client = SSHClient(key_path="/keys/rm_ed25519")
@@ -5994,8 +6008,8 @@ class TestSSHKeyAuth:
         assert "BatchMode=yes" in argv
 
     def test_upload_file_bytes_pins_identity(self, monkeypatch, tmp_path):
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.write_tools import _upload_file_bytes
+        from remarkable_mcp.core.write_tools import _upload_file_bytes
+        from remarkable_mcp.transports.ssh import SSHClient
 
         captured = {}
 
@@ -6021,8 +6035,8 @@ class TestSSHKeyAuth:
         assert "cat > '/home/root/remote.rm'" in argv[-1]
 
     def test_upload_file_bytes_password_uses_sshpass(self, monkeypatch, tmp_path):
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.write_tools import _upload_file_bytes
+        from remarkable_mcp.core.write_tools import _upload_file_bytes
+        from remarkable_mcp.transports.ssh import SSHClient
 
         captured = {}
 
@@ -6046,7 +6060,7 @@ class TestSSHKeyAuth:
     def test_upload_missing_local_file_is_not_reported_as_missing_ssh(self, monkeypatch, tmp_path):
         import subprocess as subprocess_mod
 
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         run = Mock(side_effect=AssertionError("SSH must not start for a missing source"))
         monkeypatch.setattr(subprocess_mod, "run", run)
@@ -6060,7 +6074,7 @@ class TestSSHKeyAuth:
         run.assert_not_called()
 
     def test_create_ssh_client_reads_key_env(self, monkeypatch):
-        from remarkable_mcp.ssh import create_ssh_client
+        from remarkable_mcp.transports.ssh import create_ssh_client
 
         monkeypatch.setenv("REMARKABLE_SSH_KEY", "~/.ssh/rm_key")
         monkeypatch.delenv("REMARKABLE_SSH_PASSWORD", raising=False)
@@ -6068,7 +6082,7 @@ class TestSSHKeyAuth:
         assert client.key_path == os.path.expanduser("~/.ssh/rm_key")
 
     def test_key_path_defaults_to_none(self):
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.transports.ssh import SSHClient
 
         assert SSHClient().key_path is None
 
@@ -6094,7 +6108,7 @@ class TestClientSupportsApps:
     """Test MCP Apps UI capability negotiation."""
 
     def test_supports_when_app_mime_advertised(self):
-        from remarkable_mcp.capabilities import APP_UI_EXTENSION_ID, client_supports_apps
+        from remarkable_mcp.core.capabilities import APP_UI_EXTENSION_ID, client_supports_apps
 
         ctx = _ctx_with_extensions(
             {APP_UI_EXTENSION_ID: {"mimeTypes": ["text/html;profile=mcp-app"]}}
@@ -6102,25 +6116,25 @@ class TestClientSupportsApps:
         assert client_supports_apps(ctx) is True
 
     def test_supports_when_extension_has_no_mimetypes(self):
-        from remarkable_mcp.capabilities import APP_UI_EXTENSION_ID, client_supports_apps
+        from remarkable_mcp.core.capabilities import APP_UI_EXTENSION_ID, client_supports_apps
 
         ctx = _ctx_with_extensions({APP_UI_EXTENSION_ID: {}})
         assert client_supports_apps(ctx) is True
 
     def test_not_supported_without_extension(self):
-        from remarkable_mcp.capabilities import client_supports_apps
+        from remarkable_mcp.core.capabilities import client_supports_apps
 
         ctx = _ctx_with_extensions({})
         assert client_supports_apps(ctx) is False
 
     def test_not_supported_with_wrong_mimetype(self):
-        from remarkable_mcp.capabilities import APP_UI_EXTENSION_ID, client_supports_apps
+        from remarkable_mcp.core.capabilities import APP_UI_EXTENSION_ID, client_supports_apps
 
         ctx = _ctx_with_extensions({APP_UI_EXTENSION_ID: {"mimeTypes": ["application/json"]}})
         assert client_supports_apps(ctx) is False
 
     def test_not_supported_when_no_capabilities(self):
-        from remarkable_mcp.capabilities import client_supports_apps
+        from remarkable_mcp.core.capabilities import client_supports_apps
 
         ctx = Mock()
         ctx.session = None
@@ -6131,7 +6145,7 @@ class TestCanvasResource:
     """Test the canvas app HTML resource."""
 
     def test_canvas_html_is_self_contained_bridge(self):
-        from remarkable_mcp.app_canvas import _CANVAS_HTML
+        from remarkable_mcp.core.app_canvas import _CANVAS_HTML
 
         # Self-contained HTML with the MCP Apps postMessage bridge wiring.
         assert "<!doctype html>" in _CANVAS_HTML.lower()
@@ -6142,7 +6156,7 @@ class TestCanvasResource:
         assert "png_data_uri" in _CANVAS_HTML
 
     def test_canvas_has_add_page_flow(self):
-        from remarkable_mcp.app_canvas import _CANVAS_HTML
+        from remarkable_mcp.core.app_canvas import _CANVAS_HTML
 
         # The +Page control queues a local blank page and Save materializes it
         # via remarkable_author(method="add_page") before drawing cached strokes.
@@ -6154,7 +6168,7 @@ class TestCanvasResource:
         assert 'state.fileType === "notebook"' in _CANVAS_HTML
 
     def test_canvas_footer_distinguishes_transport_from_read_only(self):
-        from remarkable_mcp.app_canvas import _CANVAS_HTML
+        from remarkable_mcp.core.app_canvas import _CANVAS_HTML
 
         # When write is enabled but the transport isn't SSH, the footer mirrors
         # the draw tool's SSH-only error instead of the generic read-only string.
@@ -6164,7 +6178,7 @@ class TestCanvasResource:
         assert "Read-only viewer" in _CANVAS_HTML
 
     def test_canvas_bridge_is_spec_compliant(self):
-        from remarkable_mcp.app_canvas import _CANVAS_HTML
+        from remarkable_mcp.core.app_canvas import _CANVAS_HTML
 
         # ui/initialize must carry a protocol version + client info per spec.
         assert "protocolVersion" in _CANVAS_HTML
@@ -6176,8 +6190,8 @@ class TestCanvasResource:
         assert ".arguments" in _CANVAS_HTML
 
     def test_canvas_resource_uses_app_mime(self):
-        from remarkable_mcp.app_canvas import CANVAS_RESOURCE_URI
-        from remarkable_mcp.capabilities import APP_UI_MIME
+        from remarkable_mcp.core.app_canvas import CANVAS_RESOURCE_URI
+        from remarkable_mcp.core.capabilities import APP_UI_MIME
 
         assert CANVAS_RESOURCE_URI == "ui://remarkable/canvas"
         assert APP_UI_MIME == "text/html;profile=mcp-app"
@@ -6193,7 +6207,7 @@ class TestFullPageRender:
     """
 
     def test_svg_full_page_viewbox_is_centered(self):
-        from remarkable_mcp.extract import _svg_full_page
+        from remarkable_mcp.documents.extract import _svg_full_page
 
         svg = _svg_full_page([], 820.0, 1458.0)
         # Center-origin X, top-origin Y: viewBox "-W/2 0 W H".
@@ -6205,7 +6219,7 @@ class TestFullPageRender:
 
         from PIL import Image
 
-        from remarkable_mcp.extract import render_rm_file_full_page_png
+        from remarkable_mcp.documents.extract import render_rm_file_full_page_png
 
         try:
             data = _make_v6_rm_bytes()
@@ -6234,7 +6248,7 @@ class TestFullPageRender:
 
         from PIL import Image
 
-        from remarkable_mcp.extract import render_page_full_page_from_document_zip
+        from remarkable_mcp.documents.extract import render_page_full_page_from_document_zip
 
         try:
             rm_bytes = _make_v6_rm_bytes()
@@ -6273,8 +6287,8 @@ class TestFullPageRender:
             zpath.unlink(missing_ok=True)
 
     def test_typed_text_emits_svg_text_elements(self):
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp.extract import _v6_blocks, _v6_text_svg_elements
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents.extract import _v6_blocks, _v6_text_svg_elements
 
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as rm_tmp:
             rm_tmp.write(nb.page_rm_bytes("Hello world\nSecond line"))
@@ -6290,8 +6304,8 @@ class TestFullPageRender:
             rm_path.unlink(missing_ok=True)
 
     def test_blank_page_has_no_typed_text(self):
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp.extract import _v6_blocks, _v6_text_svg_elements
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents.extract import _v6_blocks, _v6_text_svg_elements
 
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as rm_tmp:
             rm_tmp.write(nb.blank_page_rm_bytes())
@@ -6308,8 +6322,8 @@ class TestFullPageRender:
 
         from PIL import Image
 
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp.extract import render_rm_file_full_page_png
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents.extract import render_rm_file_full_page_png
 
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as rm_tmp:
             rm_tmp.write(nb.page_rm_bytes("Hello world"))
@@ -6327,8 +6341,8 @@ class TestFullPageRender:
 
     def test_typed_text_in_cropped_read_only_render(self):
         """remarkable_image's content-cropped render also draws typed text."""
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp.extract import _render_rm_v6_to_svg
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents.extract import _render_rm_v6_to_svg
 
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as rm_tmp:
             # A text-only page has no strokes; the cropped render must still
@@ -6348,8 +6362,8 @@ class TestFullPageRender:
 
         from PIL import Image
 
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp.extract import render_rm_file_to_png
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents.extract import render_rm_file_to_png
 
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as rm_tmp:
             rm_tmp.write(nb.page_rm_bytes("Hello world"))
@@ -6363,7 +6377,7 @@ class TestFullPageRender:
             rm_path.unlink(missing_ok=True)
 
     def test_wrap_text_helper(self):
-        from remarkable_mcp.extract import _wrap_text
+        from remarkable_mcp.documents.extract import _wrap_text
 
         # No wrapping when the text fits or no width/advance is known.
         assert _wrap_text("short line", 936, 15) == ["short line"]
@@ -6380,8 +6394,8 @@ class TestFullPageRender:
         assert _wrap_text("supercalifragilistic", 50, 15) == ["supercalifragilistic"]
 
     def test_long_paragraph_wraps_into_multiple_lines(self):
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp.extract import _v6_blocks, _v6_text_svg_elements
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents.extract import _v6_blocks, _v6_text_svg_elements
 
         long_para = (
             "The smallest frog is under 8mm long; the largest, the Goliath "
@@ -6402,8 +6416,8 @@ class TestFullPageRender:
         rmc offset that rendered text ~50 units too high)."""
         import re
 
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp.extract import _v6_blocks, _v6_text_svg_elements
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents.extract import _v6_blocks, _v6_text_svg_elements
 
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as rm_tmp:
             rm_tmp.write(nb.page_rm_bytes("Frog Facts"))
@@ -6425,9 +6439,9 @@ class TestFullPageRender:
         import re
         from unittest.mock import patch
 
-        from remarkable_mcp import extract
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp.extract import _v6_blocks, _v6_text_svg_elements
+        from remarkable_mcp.documents import extract
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents.extract import _v6_blocks, _v6_text_svg_elements
 
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as rm_tmp:
             # Two paragraphs so the line-to-line gap isolates the scaled
@@ -6478,9 +6492,9 @@ class TestRenderCanvasPage:
     def _patch_common(
         self, monkeypatch, *, page_count=3, png=None, doc_name="Notes", file_type="notebook"
     ):
-        import remarkable_mcp.api as api
-        import remarkable_mcp.extract as extract
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
+        import remarkable_mcp.documents.extract as extract
+        import remarkable_mcp.transports.api as api
 
         doc = Mock(VissibleName=doc_name, is_folder=False)
         client = Mock()
@@ -6511,7 +6525,7 @@ class TestRenderCanvasPage:
     async def test_render_returns_structured_content(self, monkeypatch):
         from mcp import types
 
-        from remarkable_mcp.app_canvas import _render_canvas_page
+        from remarkable_mcp.core.app_canvas import _render_canvas_page
 
         self._patch_common(monkeypatch, page_count=3, png=self._png_bytes())
         result = await _render_canvas_page("Notes", 2, None)
@@ -6534,7 +6548,7 @@ class TestRenderCanvasPage:
 
     @pytest.mark.asyncio
     async def test_render_document_not_found(self, monkeypatch):
-        from remarkable_mcp.app_canvas import _render_canvas_page
+        from remarkable_mcp.core.app_canvas import _render_canvas_page
 
         self._patch_common(monkeypatch, page_count=3, png=self._png_bytes())
         result = await _render_canvas_page("Nonexistent", 1, None)
@@ -6545,7 +6559,7 @@ class TestRenderCanvasPage:
 
     @pytest.mark.asyncio
     async def test_render_page_out_of_range(self, monkeypatch):
-        from remarkable_mcp.app_canvas import _render_canvas_page
+        from remarkable_mcp.core.app_canvas import _render_canvas_page
 
         self._patch_common(monkeypatch, page_count=2, png=self._png_bytes())
         result = await _render_canvas_page("Notes", 99, None)
@@ -6556,7 +6570,7 @@ class TestRenderCanvasPage:
 
     @pytest.mark.asyncio
     async def test_render_failed_when_no_png(self, monkeypatch):
-        from remarkable_mcp.app_canvas import _render_canvas_page
+        from remarkable_mcp.core.app_canvas import _render_canvas_page
 
         # render returns None and there's no PDF fallback -> render_failed
         self._patch_common(monkeypatch, page_count=2, png=None)
@@ -6568,8 +6582,8 @@ class TestRenderCanvasPage:
 
     @pytest.mark.asyncio
     async def test_render_wraps_transport_errors(self, monkeypatch):
-        import remarkable_mcp.api as api
-        from remarkable_mcp.app_canvas import _render_canvas_page
+        import remarkable_mcp.transports.api as api
+        from remarkable_mcp.core.app_canvas import _render_canvas_page
 
         def _boom():
             raise RuntimeError("network down")
@@ -6589,7 +6603,7 @@ class TestRegisterAppTools:
     async def test_register_app_tools_adds_canvas(self, monkeypatch):
         from mcp.server import MCPServer
 
-        import remarkable_mcp.app_canvas as app_canvas
+        import remarkable_mcp.core.app_canvas as app_canvas
         import remarkable_mcp.server as server_mod
 
         # register_app_tools imports mcp from server at call time, so redirect
@@ -6614,7 +6628,7 @@ class TestRegisterAppTools:
         import sys
 
         result = subprocess.run(
-            [sys.executable, "-c", "import remarkable_mcp.app_canvas"],
+            [sys.executable, "-c", "import remarkable_mcp.core.app_canvas"],
             capture_output=True,
             text=True,
         )
@@ -6636,7 +6650,7 @@ class TestCanvasRegisteredByDefault:
         assert any(str(r.uri) == "ui://remarkable/canvas" for r in resources)
 
     @pytest.mark.asyncio
-    @patch("remarkable_mcp.tools.get_rmapi")
+    @patch("remarkable_mcp.core.tools.get_rmapi")
     async def test_status_no_longer_reports_app_enabled(self, mock_get_rmapi):
         # The app has no on/off gate anymore, so status should not carry the key.
         mock_client = Mock()
@@ -6662,7 +6676,7 @@ class TestCLIFlags:
         token = '{"devicetoken": "secret-value"}'
         with (
             patch.object(sys, "argv", ["remarkable-mcp", "--register", "one-time-code"]),
-            patch("remarkable_mcp.api.register_and_get_token", return_value=token),
+            patch("remarkable_mcp.transports.api.register_and_get_token", return_value=token),
         ):
             cli.main()
 
@@ -6873,7 +6887,7 @@ class TestCanvasWrite:
         restore the default surface. Individual tests still patch
         REMARKABLE_USE_SSH at call time so the impl runs in SSH mode.
         """
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
@@ -6894,7 +6908,7 @@ class TestCanvasWrite:
         with (
             patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
             patch(
-                "remarkable_mcp.write_tools.get_rmapi",
+                "remarkable_mcp.core.write_tools.get_rmapi",
                 side_effect=AssertionError("invalid requests must not resolve a client"),
             ),
         ):
@@ -6910,7 +6924,7 @@ class TestCanvasWrite:
         with (
             patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
             patch(
-                "remarkable_mcp.write_tools.get_rmapi",
+                "remarkable_mcp.core.write_tools.get_rmapi",
                 side_effect=AssertionError("invalid requests must not resolve a client"),
             ),
         ):
@@ -6922,8 +6936,8 @@ class TestCanvasWrite:
     @pytest.mark.asyncio
     async def test_missing_layer_autocreates_overlay(self):
         """A page with no .rm overlay gets a blank drawable layer created automatically."""
-        import remarkable_mcp.strokes as strokes_mod
-        import remarkable_mcp.write_tools as wt
+        import remarkable_mcp.core.write_tools as wt
+        import remarkable_mcp.documents.strokes as strokes_mod
 
         doc = self._mock_doc()
         content = json.dumps({"cPages": {"pages": [{"id": "page-1"}]}, "fileType": "pdf"})
@@ -6987,8 +7001,8 @@ class TestCanvasWrite:
     @pytest.mark.parametrize("defer_restart", [False, True])
     async def test_happy_path_appends_and_backs_up(self, defer_restart):
         """Strokes are appended, the pristine original is backed up once, xochitl restarts."""
-        import remarkable_mcp.strokes as strokes_mod
-        import remarkable_mcp.write_tools as wt
+        import remarkable_mcp.core.write_tools as wt
+        import remarkable_mcp.documents.strokes as strokes_mod
 
         doc = self._mock_doc()
         content = json.dumps(
@@ -7078,8 +7092,8 @@ class TestCanvasWrite:
     @pytest.mark.asyncio
     async def test_epub_warns_about_reflow(self):
         """Annotating a reflowable EPUB surfaces a drift caveat in the response."""
-        import remarkable_mcp.strokes as strokes_mod
-        import remarkable_mcp.write_tools as wt
+        import remarkable_mcp.core.write_tools as wt
+        import remarkable_mcp.documents.strokes as strokes_mod
 
         doc = self._mock_doc()
         content = json.dumps({"cPages": {"pages": [{"id": "page-1"}]}, "fileType": "epub"})
@@ -7132,7 +7146,7 @@ class TestCanvasWrite:
     @pytest.mark.parametrize("defer_restart", [False, True])
     async def test_add_page_appends_blank_page(self, defer_restart):
         """method="add_page" uploads a blank .rm and grows the notebook's .content."""
-        import remarkable_mcp.write_tools as wt
+        import remarkable_mcp.core.write_tools as wt
 
         doc = self._mock_doc()
         content = json.dumps(
@@ -7193,7 +7207,7 @@ class TestCanvasWrite:
     @pytest.mark.asyncio
     async def test_add_page_rejects_non_notebook(self):
         """Adding a page to a PDF (flat pages list) returns an educational error."""
-        import remarkable_mcp.write_tools as wt
+        import remarkable_mcp.core.write_tools as wt
 
         doc = self._mock_doc()
         content = json.dumps({"pages": ["p1", "p2"], "fileType": "pdf"})
@@ -7221,7 +7235,7 @@ class TestCanvasWrite:
     @pytest.mark.parametrize("defer_restart", [False, True])
     async def test_create_document_blank(self, defer_restart):
         """method="create_document" scaffolds a notebook (.rm + .content + .metadata)."""
-        import remarkable_mcp.write_tools as wt
+        import remarkable_mcp.core.write_tools as wt
 
         client = Mock(
             spec=[
@@ -7276,7 +7290,7 @@ class TestCanvasWrite:
     @pytest.mark.asyncio
     async def test_create_document_with_text_seeds_first_page(self):
         """Seeding text sets has_text; the typed text renders in the canvas preview."""
-        import remarkable_mcp.write_tools as wt
+        import remarkable_mcp.core.write_tools as wt
 
         client = Mock(
             spec=[
@@ -7309,7 +7323,7 @@ class TestCanvasWrite:
         with (
             patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
             patch(
-                "remarkable_mcp.write_tools.get_rmapi",
+                "remarkable_mcp.core.write_tools.get_rmapi",
                 side_effect=AssertionError("invalid requests must not resolve a client"),
             ),
         ):
@@ -7319,13 +7333,13 @@ class TestCanvasWrite:
 
 
 class TestNotebookBuilders:
-    """Pure-logic tests for remarkable_mcp.notebooks (no transport)."""
+    """Pure-logic tests for remarkable_mcp.documents.notebooks (no transport)."""
 
     def test_blank_page_is_drawable(self):
         import io
 
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp import strokes as s
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents import strokes as s
 
         raw = nb.blank_page_rm_bytes()
         blocks = list(s.read_blocks(io.BytesIO(raw)))
@@ -7334,8 +7348,8 @@ class TestNotebookBuilders:
     def test_text_page_is_drawable_and_appendable(self):
         import io
 
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp import strokes as s
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents import strokes as s
 
         raw = nb.page_rm_bytes("Hello\nWorld")
         blocks = list(s.read_blocks(io.BytesIO(raw)))
@@ -7346,7 +7360,7 @@ class TestNotebookBuilders:
         assert out.startswith(raw)
 
     def test_next_page_idx_sequence(self):
-        from remarkable_mcp import notebooks as nb
+        from remarkable_mcp.documents import notebooks as nb
 
         assert nb.next_page_idx([]) == "ba"
         vals = []
@@ -7356,7 +7370,7 @@ class TestNotebookBuilders:
         assert nb.next_page_idx(["bz"]) == "bza"
 
     def test_new_notebook_content_shape(self):
-        from remarkable_mcp import notebooks as nb
+        from remarkable_mcp.documents import notebooks as nb
 
         au = nb.new_uuid()
         pid = nb.new_uuid()
@@ -7375,8 +7389,8 @@ class TestNotebookBuilders:
 
         from rmscene.scene_stream import AuthorIdsBlock
 
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp import strokes as s
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents import strokes as s
 
         au = nb.new_uuid()
         raw = nb.blank_page_rm_bytes(author_uuid=au)
@@ -7386,7 +7400,7 @@ class TestNotebookBuilders:
         assert c["cPages"]["uuids"][0]["first"] == str(author_block.author_uuids[1])
 
     def test_append_page_to_content_grows(self):
-        from remarkable_mcp import notebooks as nb
+        from remarkable_mcp.documents import notebooks as nb
 
         au = nb.new_uuid()
         c = nb.new_notebook_content([nb.new_uuid()], au)
@@ -7397,13 +7411,13 @@ class TestNotebookBuilders:
         assert c["cPages"]["pages"][1]["idx"]["value"] == "bb"
 
     def test_append_page_rejects_non_notebook(self):
-        from remarkable_mcp import notebooks as nb
+        from remarkable_mcp.documents import notebooks as nb
 
         with pytest.raises(ValueError):
             nb.append_page_to_content({"pages": ["a", "b"], "fileType": "pdf"}, "x")
 
     def test_metadata_shape(self):
-        from remarkable_mcp import notebooks as nb
+        from remarkable_mcp.documents import notebooks as nb
 
         m = nb.new_document_metadata("Hello", parent="folder-uuid")
         assert m["visibleName"] == "Hello"
@@ -7431,7 +7445,7 @@ class TestGetDocumentFileType:
         return zpath
 
     def test_reads_notebook_file_type(self):
-        from remarkable_mcp.extract import get_document_file_type
+        from remarkable_mcp.documents.extract import get_document_file_type
 
         zpath = self._zip_with_content({"fileType": "notebook", "formatVersion": 2})
         try:
@@ -7440,7 +7454,7 @@ class TestGetDocumentFileType:
             zpath.unlink(missing_ok=True)
 
     def test_reads_pdf_file_type(self):
-        from remarkable_mcp.extract import get_document_file_type
+        from remarkable_mcp.documents.extract import get_document_file_type
 
         zpath = self._zip_with_content({"fileType": "pdf"})
         try:
@@ -7449,7 +7463,7 @@ class TestGetDocumentFileType:
             zpath.unlink(missing_ok=True)
 
     def test_missing_content_returns_empty(self):
-        from remarkable_mcp.extract import get_document_file_type
+        from remarkable_mcp.documents.extract import get_document_file_type
 
         zpath = self._zip_with_content(None)  # no .content entry
         try:
@@ -7461,7 +7475,7 @@ class TestGetDocumentFileType:
         import tempfile
         from pathlib import Path
 
-        from remarkable_mcp.extract import get_document_file_type
+        from remarkable_mcp.documents.extract import get_document_file_type
 
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as ztmp:
             ztmp.write(b"not a zip")
@@ -7515,12 +7529,12 @@ class TestRestartXochitl:
         return client
 
     def test_restarts_then_reports_ready_on_first_active(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         client = self._ssh_client(["active\n", "active\n", "active\n"])
         with (
-            patch("remarkable_mcp.write_tools._tcp_port_open", return_value=False),
-            patch("remarkable_mcp.write_tools.time.sleep") as mock_sleep,
+            patch("remarkable_mcp.core.write_tools._tcp_port_open", return_value=False),
+            patch("remarkable_mcp.core.write_tools.time.sleep") as mock_sleep,
         ):
             write_tools._restart_xochitl(client)
 
@@ -7532,14 +7546,14 @@ class TestRestartXochitl:
         mock_sleep.assert_called_once_with(write_tools._RESTART_SETTLE_SECONDS)
 
     def test_polls_until_active(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         client = self._ssh_client(
             ["active\n", "activating\n", "activating\n", "active\n", "active\n"]
         )
         with (
-            patch("remarkable_mcp.write_tools._tcp_port_open", return_value=False),
-            patch("remarkable_mcp.write_tools.time.sleep") as mock_sleep,
+            patch("remarkable_mcp.core.write_tools._tcp_port_open", return_value=False),
+            patch("remarkable_mcp.core.write_tools.time.sleep") as mock_sleep,
         ):
             write_tools._restart_xochitl(client)
 
@@ -7553,26 +7567,26 @@ class TestRestartXochitl:
         ]
 
     def test_command_failure_is_treated_as_not_ready(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         client = self._ssh_client(
             ["active\n", RuntimeError("SSH command failed"), "active\n", "active\n"]
         )
         with (
-            patch("remarkable_mcp.write_tools._tcp_port_open", return_value=False),
-            patch("remarkable_mcp.write_tools.time.sleep"),
+            patch("remarkable_mcp.core.write_tools._tcp_port_open", return_value=False),
+            patch("remarkable_mcp.core.write_tools.time.sleep"),
         ):
             write_tools._restart_xochitl(client)
 
         assert len([c for c in client.calls if c == "systemctl is-active xochitl"]) == 4
 
     def test_wait_ready_false_skips_poll(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         client = self._ssh_client(["active\n"])
         with (
-            patch("remarkable_mcp.write_tools._tcp_port_open") as mock_web,
-            patch("remarkable_mcp.write_tools.time.sleep") as mock_sleep,
+            patch("remarkable_mcp.core.write_tools._tcp_port_open") as mock_web,
+            patch("remarkable_mcp.core.write_tools.time.sleep") as mock_sleep,
         ):
             write_tools._restart_xochitl(client, wait_ready=False)
 
@@ -7586,7 +7600,7 @@ class TestRestartXochitl:
         mock_sleep.assert_not_called()
 
     def test_four_restarts_inside_limit_window_reset_before_each_start(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         calls = []
         starts_in_window = 3
@@ -7624,7 +7638,7 @@ class TestRestartXochitl:
         )
 
     def test_reset_failure_is_attributed_and_restart_is_not_attempted(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         client = self._ssh_client(["active\n"])
         original = client._ssh_command.side_effect
@@ -7642,7 +7656,7 @@ class TestRestartXochitl:
         assert "systemctl restart xochitl" not in client.calls
 
     def test_start_limit_restart_failure_surfaces_emergency_reboot_risk(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         client = self._ssh_client(["active\n"])
         original = client._ssh_command.side_effect
@@ -7658,25 +7672,25 @@ class TestRestartXochitl:
             write_tools._restart_xochitl(client, wait_ready=False)
 
     def test_boot_id_change_reports_emergency_reboot(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         client = self._ssh_client(
             ["active\n"],
             boot_ids=["boot-a\n", "boot-b\n"],
         )
         with (
-            patch("remarkable_mcp.write_tools._tcp_port_open", return_value=False),
+            patch("remarkable_mcp.core.write_tools._tcp_port_open", return_value=False),
             pytest.raises(RuntimeError, match="boot ID changed.*emergency"),
         ):
             write_tools._restart_xochitl(client)
 
     def test_usb_web_is_required_only_when_reachable_before_restart(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         no_web_client = self._ssh_client(["active\n", "active\n", "active\n"])
         with (
-            patch("remarkable_mcp.write_tools._tcp_port_open", return_value=False) as no_web,
-            patch("remarkable_mcp.write_tools.time.sleep"),
+            patch("remarkable_mcp.core.write_tools._tcp_port_open", return_value=False) as no_web,
+            patch("remarkable_mcp.core.write_tools.time.sleep"),
         ):
             write_tools._restart_xochitl(no_web_client)
         no_web.assert_called_once()
@@ -7686,16 +7700,16 @@ class TestRestartXochitl:
         )
         with (
             patch(
-                "remarkable_mcp.write_tools._tcp_port_open",
+                "remarkable_mcp.core.write_tools._tcp_port_open",
                 side_effect=[True, False, True, True],
             ) as web,
-            patch("remarkable_mcp.write_tools.time.sleep"),
+            patch("remarkable_mcp.core.write_tools.time.sleep"),
         ):
             write_tools._restart_xochitl(web_client)
         assert web.call_count == 4
 
     def test_single_active_probe_cannot_report_false_success(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         client = self._ssh_client(
             ["active\n", "active\n", "activating\n", "activating\n"],
@@ -7706,19 +7720,19 @@ class TestRestartXochitl:
             now[0] += seconds
 
         with (
-            patch("remarkable_mcp.write_tools._tcp_port_open", return_value=False),
-            patch("remarkable_mcp.write_tools._RESTART_READY_TIMEOUT", 2),
-            patch("remarkable_mcp.write_tools._RESTART_POLL_INTERVAL", 1),
-            patch("remarkable_mcp.write_tools._RESTART_SETTLE_SECONDS", 0),
-            patch("remarkable_mcp.write_tools.time.monotonic", side_effect=lambda: now[0]),
-            patch("remarkable_mcp.write_tools.time.sleep", side_effect=sleep),
+            patch("remarkable_mcp.core.write_tools._tcp_port_open", return_value=False),
+            patch("remarkable_mcp.core.write_tools._RESTART_READY_TIMEOUT", 2),
+            patch("remarkable_mcp.core.write_tools._RESTART_POLL_INTERVAL", 1),
+            patch("remarkable_mcp.core.write_tools._RESTART_SETTLE_SECONDS", 0),
+            patch("remarkable_mcp.core.write_tools.time.monotonic", side_effect=lambda: now[0]),
+            patch("remarkable_mcp.core.write_tools.time.sleep", side_effect=sleep),
             pytest.raises(RuntimeError, match="did not sustain"),
         ):
             write_tools._restart_xochitl(client)
 
     def test_restart_settle_blocks_other_ssh_operations(self):
-        from remarkable_mcp import write_tools
-        from remarkable_mcp.ssh import SSHClient
+        from remarkable_mcp.core import write_tools
+        from remarkable_mcp.transports.ssh import SSHClient
 
         client = SSHClient()
         settle_started = threading.Event()
@@ -7739,8 +7753,8 @@ class TestRestartXochitl:
         client._ssh_command_unlocked = fake_command
         client.effective_host = lambda: "10.11.99.1"
         with (
-            patch("remarkable_mcp.write_tools._tcp_port_open", return_value=False),
-            patch("remarkable_mcp.write_tools.time.sleep", side_effect=fake_sleep),
+            patch("remarkable_mcp.core.write_tools._tcp_port_open", return_value=False),
+            patch("remarkable_mcp.core.write_tools.time.sleep", side_effect=fake_sleep),
             ThreadPoolExecutor(max_workers=2) as executor,
         ):
             restart = executor.submit(write_tools._restart_xochitl, client)
@@ -7793,7 +7807,7 @@ class TestDeferRestart:
         return client
 
     def test_defer_restart_enabled_reads_env(self, monkeypatch):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         monkeypatch.delenv("REMARKABLE_DEFER_RESTART", raising=False)
         assert write_tools._defer_restart_enabled() is False
@@ -7801,12 +7815,12 @@ class TestDeferRestart:
         assert write_tools._defer_restart_enabled() is True
 
     def test_maybe_restart_honors_per_call_defer(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         client = self._make_ssh_client()
         with (
-            patch("remarkable_mcp.write_tools._restart_xochitl") as mock_restart,
-            patch("remarkable_mcp.write_tools._defer_restart_enabled", return_value=False),
+            patch("remarkable_mcp.core.write_tools._restart_xochitl") as mock_restart,
+            patch("remarkable_mcp.core.write_tools._defer_restart_enabled", return_value=False),
         ):
             assert write_tools._maybe_restart_xochitl(client, defer_restart=True) is False
             mock_restart.assert_not_called()
@@ -7814,20 +7828,20 @@ class TestDeferRestart:
             mock_restart.assert_called_once_with(client)
 
     def test_maybe_restart_honors_env_defer(self):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         client = self._make_ssh_client()
         with (
-            patch("remarkable_mcp.write_tools._restart_xochitl") as mock_restart,
-            patch("remarkable_mcp.write_tools._defer_restart_enabled", return_value=True),
+            patch("remarkable_mcp.core.write_tools._restart_xochitl") as mock_restart,
+            patch("remarkable_mcp.core.write_tools._defer_restart_enabled", return_value=True),
         ):
             # env defers even though the per-call argument is False
             assert write_tools._maybe_restart_xochitl(client, defer_restart=False) is False
             mock_restart.assert_not_called()
 
     def test_deferred_cache_tracks_add_update_and_delete(self):
-        from remarkable_mcp.ssh import Document, SSHClient
-        from remarkable_mcp.write_tools import _update_deferred_ssh_cache
+        from remarkable_mcp.core.write_tools import _update_deferred_ssh_cache
+        from remarkable_mcp.transports.ssh import Document, SSHClient
 
         client = SSHClient()
         original = Document(
@@ -7864,8 +7878,8 @@ class TestDeferRestart:
         assert client.get_doc("doc-1") is original
 
     def test_deferred_cache_reads_documents_after_acquiring_lock(self):
-        from remarkable_mcp.ssh import Document, SSHClient
-        from remarkable_mcp.write_tools import _update_deferred_ssh_cache
+        from remarkable_mcp.core.write_tools import _update_deferred_ssh_cache
+        from remarkable_mcp.transports.ssh import Document, SSHClient
 
         client = SSHClient()
         stale = Document(
@@ -7899,8 +7913,8 @@ class TestDeferRestart:
         assert client._documents_by_id == {}
 
     def test_restart_invalidates_deferred_cache(self):
-        from remarkable_mcp.ssh import Document, SSHClient
-        from remarkable_mcp.write_tools import _update_deferred_ssh_cache
+        from remarkable_mcp.core.write_tools import _update_deferred_ssh_cache
+        from remarkable_mcp.transports.ssh import Document, SSHClient
 
         client = SSHClient()
         doc = Document(
@@ -7920,8 +7934,8 @@ class TestDeferRestart:
         assert client._file_type_cache is None
 
     def test_local_dir_invalidation_preserves_reload_sentinel(self, tmp_path):
-        from remarkable_mcp.local_dir import LocalDirClient
-        from remarkable_mcp.write_tools import _invalidate_client_cache
+        from remarkable_mcp.core.write_tools import _invalidate_client_cache
+        from remarkable_mcp.transports.local_dir import LocalDirClient
 
         client = LocalDirClient(tmp_path)
         client._file_type_cache = {"doc-1": "pdf"}
@@ -7932,7 +7946,7 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_upload_defer_skips_restart_and_flags_pending(self, tmp_path):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 test")
@@ -7942,11 +7956,11 @@ class TestDeferRestart:
         try:
             client = self._make_ssh_client()
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
-                patch("remarkable_mcp.write_tools._upload_file_bytes"),
-                patch("remarkable_mcp.write_tools._write_metadata"),
-                patch("remarkable_mcp.write_tools._write_content_file"),
-                patch("remarkable_mcp.write_tools._restart_xochitl") as mock_restart,
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
+                patch("remarkable_mcp.core.write_tools._upload_file_bytes"),
+                patch("remarkable_mcp.core.write_tools._write_metadata"),
+                patch("remarkable_mcp.core.write_tools._write_content_file"),
+                patch("remarkable_mcp.core.write_tools._restart_xochitl") as mock_restart,
                 patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
             ):
                 result = await _call_tool(
@@ -7962,7 +7976,7 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_upload_without_defer_restarts_and_clears_flag(self, tmp_path):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 test")
@@ -7972,12 +7986,12 @@ class TestDeferRestart:
         try:
             client = self._make_ssh_client()
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
-                patch("remarkable_mcp.write_tools._upload_file_bytes"),
-                patch("remarkable_mcp.write_tools._write_metadata"),
-                patch("remarkable_mcp.write_tools._write_content_file"),
-                patch("remarkable_mcp.write_tools._restart_xochitl") as mock_restart,
-                patch("remarkable_mcp.write_tools._defer_restart_enabled", return_value=False),
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
+                patch("remarkable_mcp.core.write_tools._upload_file_bytes"),
+                patch("remarkable_mcp.core.write_tools._write_metadata"),
+                patch("remarkable_mcp.core.write_tools._write_content_file"),
+                patch("remarkable_mcp.core.write_tools._restart_xochitl") as mock_restart,
+                patch("remarkable_mcp.core.write_tools._defer_restart_enabled", return_value=False),
                 patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
             ):
                 result = await _call_tool(
@@ -7995,8 +8009,8 @@ class TestDeferRestart:
     async def test_concurrent_real_ssh_client_writes_share_refresh(self):
         import asyncio
 
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
+        from remarkable_mcp.transports.ssh import SSHClient
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
@@ -8004,9 +8018,9 @@ class TestDeferRestart:
         client._metadata_loaded_all = True
         try:
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
-                patch("remarkable_mcp.write_tools._write_metadata"),
-                patch("remarkable_mcp.write_tools._restart_xochitl") as mock_restart,
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
+                patch("remarkable_mcp.core.write_tools._write_metadata"),
+                patch("remarkable_mcp.core.write_tools._restart_xochitl") as mock_restart,
                 patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
             ):
                 results = await asyncio.gather(
@@ -8023,9 +8037,9 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_ambiguous_write_is_not_replayed_and_forces_refresh(self, tmp_path):
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.ssh_reliability import SSHExecutionUnknownError
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
+        from remarkable_mcp.transports.ssh import SSHClient
+        from remarkable_mcp.transports.ssh_reliability import SSHExecutionUnknownError
 
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 test")
@@ -8035,12 +8049,12 @@ class TestDeferRestart:
         client._metadata_loaded_all = True
         try:
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
                 patch(
-                    "remarkable_mcp.write_tools._upload_file_bytes",
+                    "remarkable_mcp.core.write_tools._upload_file_bytes",
                     side_effect=SSHExecutionUnknownError("remote state unknown"),
                 ) as mock_upload,
-                patch("remarkable_mcp.write_tools._restart_xochitl") as mock_restart,
+                patch("remarkable_mcp.core.write_tools._restart_xochitl") as mock_restart,
                 patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
             ):
                 result = await _call_tool(
@@ -8060,9 +8074,9 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_partial_deferred_pre_execution_error_is_not_retryable(self):
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.ssh_reliability import SSHPreExecutionError
-        from remarkable_mcp.write_tools import _run_ssh_tool_operation
+        from remarkable_mcp.core.write_tools import _run_ssh_tool_operation
+        from remarkable_mcp.transports.ssh import SSHClient
+        from remarkable_mcp.transports.ssh_reliability import SSHPreExecutionError
 
         client = SSHClient()
 
@@ -8093,8 +8107,8 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_partial_deferred_error_response_is_not_retryable(self):
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.write_tools import _run_ssh_tool_operation
+        from remarkable_mcp.core.write_tools import _run_ssh_tool_operation
+        from remarkable_mcp.transports.ssh import SSHClient
 
         client = SSHClient()
 
@@ -8124,8 +8138,8 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_clean_deferred_error_response_does_not_request_refresh(self):
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.write_tools import _run_ssh_tool_operation
+        from remarkable_mcp.core.write_tools import _run_ssh_tool_operation
+        from remarkable_mcp.transports.ssh import SSHClient
 
         client = SSHClient()
         try:
@@ -8149,7 +8163,7 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_refresh_tool_registered_in_ssh_and_restarts_once(self):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
@@ -8159,8 +8173,8 @@ class TestDeferRestart:
 
             client = self._make_ssh_client()
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
-                patch("remarkable_mcp.write_tools._restart_xochitl") as mock_restart,
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
+                patch("remarkable_mcp.core.write_tools._restart_xochitl") as mock_restart,
                 patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
             ):
                 result = await _call_tool("remarkable_refresh", {})
@@ -8172,16 +8186,16 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_refresh_real_ssh_client_refreshes_unknown_then_noops_when_clean(self):
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
+        from remarkable_mcp.transports.ssh import SSHClient
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
         client = SSHClient()
         try:
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
-                patch("remarkable_mcp.write_tools._restart_xochitl") as restart,
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
+                patch("remarkable_mcp.core.write_tools._restart_xochitl") as restart,
                 patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
             ):
                 first = json.loads((await _call_tool("remarkable_refresh", {})).content[0].text)
@@ -8198,15 +8212,15 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_refresh_reports_concurrent_deferred_write_as_pending(self):
-        from remarkable_mcp.ssh import SSHClient
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
+        from remarkable_mcp.transports.ssh import SSHClient
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
         client = SSHClient()
         try:
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
                 patch.object(
                     client._refresh_coordinator,
                     "refresh_explicit",
@@ -8231,8 +8245,8 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_refresh_failure_invalidates_deferred_cache(self):
-        from remarkable_mcp.ssh import Document, SSHClient
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
+        from remarkable_mcp.transports.ssh import Document, SSHClient
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
@@ -8254,9 +8268,9 @@ class TestDeferRestart:
                 persisted=lambda result: result == "saved",
             )
             with (
-                patch("remarkable_mcp.write_tools.get_rmapi", return_value=client),
+                patch("remarkable_mcp.core.write_tools.get_rmapi", return_value=client),
                 patch(
-                    "remarkable_mcp.write_tools._restart_xochitl",
+                    "remarkable_mcp.core.write_tools._restart_xochitl",
                     side_effect=RuntimeError("SSH lost"),
                 ),
                 patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
@@ -8277,14 +8291,14 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_refresh_client_failure_is_structured(self):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
             register_write_tools()
         try:
             with (
                 patch(
-                    "remarkable_mcp.write_tools.get_rmapi",
+                    "remarkable_mcp.core.write_tools.get_rmapi",
                     side_effect=RuntimeError("client unavailable"),
                 ),
                 patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}),
@@ -8299,7 +8313,7 @@ class TestDeferRestart:
 
     @pytest.mark.asyncio
     async def test_refresh_tool_hidden_in_cloud_mode(self):
-        from remarkable_mcp.write_tools import register_write_tools
+        from remarkable_mcp.core.write_tools import register_write_tools
 
         env = {k: v for k, v in os.environ.items() if k != "REMARKABLE_USE_SSH"}
         env.pop("REMARKABLE_USE_USB_WEB", None)
@@ -8392,7 +8406,7 @@ class TestTextAnchoredInk:
     def _blocks(self, data: bytes):
         import tempfile
 
-        from remarkable_mcp.extract import _v6_blocks
+        from remarkable_mcp.documents.extract import _v6_blocks
 
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as tmp:
             tmp.write(data)
@@ -8405,7 +8419,7 @@ class TestTextAnchoredInk:
     def test_text_layout_exposes_anchor_positions(self):
         from rmscene.tagged_block_common import CrdtId
 
-        from remarkable_mcp.extract import (
+        from remarkable_mcp.documents.extract import (
             _ANCHOR_TEXT_BOTTOM,
             _ANCHOR_TEXT_TOP,
             _v6_text_elements_with_bounds,
@@ -8423,7 +8437,7 @@ class TestTextAnchoredInk:
         assert top < anchor_pos[anchor_char] < bottom
 
     def test_anchored_stroke_is_translated(self):
-        from remarkable_mcp.extract import (
+        from remarkable_mcp.documents.extract import (
             _v6_paths_from_blocks,
             _v6_text_elements_with_bounds,
         )
@@ -8446,7 +8460,7 @@ class TestTextAnchoredInk:
     def test_full_render_places_ink_below_text(self):
         import tempfile
 
-        from remarkable_mcp.extract import _render_rm_v6_to_svg
+        from remarkable_mcp.documents.extract import _render_rm_v6_to_svg
 
         data, _, raw_points = _make_v6_anchored_rm_bytes()
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as tmp:
@@ -8465,13 +8479,13 @@ class TestTextAnchoredInk:
     def test_unanchored_stroke_unchanged_when_anchor_map_present(self):
         import tempfile
 
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp.extract import (
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents.extract import (
             _v6_blocks,
             _v6_paths_from_blocks,
             _v6_text_elements_with_bounds,
         )
-        from remarkable_mcp.strokes import append_strokes
+        from remarkable_mcp.documents.strokes import append_strokes
 
         data = append_strokes(
             nb.page_rm_bytes("Hello world"),
@@ -8498,8 +8512,8 @@ class TestTypedTextExtraction:
     def test_extract_text_from_rm_file_reads_typed_paragraphs(self):
         import tempfile
 
-        from remarkable_mcp import notebooks as nb
-        from remarkable_mcp.extract import extract_text_from_rm_file
+        from remarkable_mcp.documents import notebooks as nb
+        from remarkable_mcp.documents.extract import extract_text_from_rm_file
 
         with tempfile.NamedTemporaryFile(suffix=".rm", delete=False) as tmp:
             tmp.write(nb.page_rm_bytes("Hello world\nSecond line"))

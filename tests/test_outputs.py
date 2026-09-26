@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from remarkable_mcp.workflows.code_review import LineComment, comment_body, github_event
-from remarkable_mcp.workflows.sketch import recognise, to_mermaid
-from remarkable_mcp.workflows.web import text_fragment_link
-from remarkable_mcp.workflows.wireframe import Element, to_html
+from remarkable_mcp.workflows.reading.web import text_fragment_link
+from remarkable_mcp.workflows.review.code import LineComment, comment_body, github_event
+from remarkable_mcp.workflows.structure.sketch import recognise, to_mermaid
+from remarkable_mcp.workflows.structure.wireframe import Element, to_html
 from test_sketch import S, arrow_in_stroke, diamond_path, ellipse_path, rect_path
 
 NASTY = [

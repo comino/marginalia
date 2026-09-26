@@ -4,8 +4,8 @@ import hashlib
 import hmac
 import json
 
-from remarkable_mcp.workflows import myscript
-from remarkable_mcp.workflows.ink import Stroke
+from remarkable_mcp.workflows.ink import myscript
+from remarkable_mcp.workflows.ink.page import Stroke
 
 
 def _strokes():
@@ -62,7 +62,7 @@ def test_not_configured(monkeypatch):
 
 
 def test_handwriting_pipeline_prefers_strokes(monkeypatch, tmp_path):
-    from remarkable_mcp.workflows import handwriting
+    from remarkable_mcp.workflows.ink import handwriting
 
     monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
     monkeypatch.delenv("REMARKABLE_HANDWRITING_BACKEND", raising=False)

@@ -19,7 +19,7 @@ capabilities attached to that request:
 ```python
 from mcp.server.mcpserver import Context
 
-from remarkable_mcp.capabilities import (
+from remarkable_mcp.core.capabilities import (
     client_supports_elicitation,
     get_client_capabilities,
     get_client_info,

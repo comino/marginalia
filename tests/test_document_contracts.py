@@ -53,7 +53,7 @@ def _pdf_bytes() -> bytes:
 
 
 def _pdf_archive(*, annotated: bool, user_added: bool) -> bytes:
-    from remarkable_mcp import notebooks
+    from remarkable_mcp.documents import notebooks
 
     pdf_bytes = _pdf_bytes()
 
@@ -89,11 +89,11 @@ class TestArchivedMetadataShapes:
     """The shared archive predicate supports every transport's metadata object."""
 
     def test_cloud_ssh_local_dir_and_usb_shapes(self):
-        from remarkable_mcp.local_dir import Document as LocalDocument
-        from remarkable_mcp.ssh import Document as SSHDocument
-        from remarkable_mcp.sync import Document as CloudDocument
-        from remarkable_mcp.tools import _is_cloud_archived
-        from remarkable_mcp.usb_web import Document as USBDocument
+        from remarkable_mcp.core.tools import _is_cloud_archived
+        from remarkable_mcp.transports.local_dir import Document as LocalDocument
+        from remarkable_mcp.transports.ssh import Document as SSHDocument
+        from remarkable_mcp.transports.sync import Document as CloudDocument
+        from remarkable_mcp.transports.usb_web import Document as USBDocument
 
         cloud_trash = CloudDocument("cloud", "", "Cloud", "DocumentType", parent="trash")
         cloud_live = CloudDocument("cloud-live", "", "Cloud live", "DocumentType")
@@ -124,8 +124,8 @@ class TestArchivedMetadataShapes:
 
 class TestLiveDocumentLookup:
     def test_live_namesake_wins_and_trash_only_is_hidden(self):
-        from remarkable_mcp.api import get_items_by_id
-        from remarkable_mcp.tools import _find_target_document
+        from remarkable_mcp.core.tools import _find_target_document
+        from remarkable_mcp.transports.api import get_items_by_id
 
         trashed = _document("Shared name", "trashed", parent="trash")
         live = _document("Shared name", "live")
@@ -136,7 +136,7 @@ class TestLiveDocumentLookup:
 
     @pytest.mark.asyncio
     async def test_read_and_image_resolve_the_live_namesake(self):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         trashed = _document("Shared name", "trashed", parent="trash")
         live = _document("Shared name", "live")
@@ -192,7 +192,7 @@ class TestLiveDocumentLookup:
         ],
     )
     async def test_trashed_documents_are_excluded_from_suggestions(self, tool_name, arguments):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         trashed = _document("Meeting Notes Trash", "trashed", parent="trash")
         live = _document("Meeting Notes Live", "live")
@@ -233,7 +233,7 @@ class TestReadPageCounts:
         expected_content_pages,
         expected_more,
     ):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document(f"{label} notebook", f"{label}-id")
         client = Mock()
@@ -265,7 +265,7 @@ class TestReadPageCounts:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("file_type", ["pdf", "epub"])
     async def test_pdf_and_epub_keep_text_pagination_separate(self, file_type):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document(f"Long {file_type}", f"{file_type}-id")
         client = Mock()
@@ -295,7 +295,7 @@ class TestReadPageCounts:
 
     @pytest.mark.asyncio
     async def test_raw_epub_uses_archive_page_count(self):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("Raw epub", "raw-epub")
         client = Mock()
@@ -323,7 +323,7 @@ class TestReadPageCounts:
 
     @pytest.mark.asyncio
     async def test_raw_pdf_counts_source_without_archive_download(self):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("Raw PDF", "raw-pdf")
         client = Mock()
@@ -352,7 +352,7 @@ class TestReadPageCounts:
 
     @pytest.mark.asyncio
     async def test_raw_epub_archive_failure_preserves_content(self):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("Offline EPUB", "offline-epub")
         client = Mock()
@@ -385,7 +385,7 @@ class TestReadPageCounts:
         self,
         metadata_file_type,
     ):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("Native PDF text", "native-pdf-text")
         client = Mock()
@@ -422,7 +422,7 @@ class TestReadPageCounts:
         self,
         metadata_file_type,
     ):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("Native PDF annotations", "native-pdf-annotations")
         client = Mock()
@@ -474,7 +474,7 @@ class TestPdfRenderingDefault:
         render_merged,
         expected_merged,
     ):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("Visual", "visual")
         client = Mock()
@@ -510,7 +510,7 @@ class TestPdfRenderingDefault:
 
     @pytest.mark.asyncio
     async def test_auto_mode_preserves_user_added_pdf_page_annotation_fallback(self):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("PDF with added page", "pdf-added")
         client = Mock()
@@ -539,7 +539,7 @@ class TestPdfRenderingDefault:
 
     @pytest.mark.asyncio
     async def test_explicit_annotation_only_skips_pdf_underlay_fallback(self):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("Annotation only", "annotation-only")
         client = Mock()
@@ -594,7 +594,7 @@ class TestPdfRenderingDefault:
         user_added,
         expected_merged,
     ):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("PDF variants", "pdf-variants")
         client = Mock()
@@ -617,7 +617,7 @@ class TestPdfRenderingDefault:
 
     @pytest.mark.asyncio
     async def test_svg_auto_mode_remains_annotation_only_without_warning(self):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("PDF SVG", "pdf-svg")
         client = Mock()
@@ -649,7 +649,7 @@ class TestPdfRenderingDefault:
 
     @pytest.mark.asyncio
     async def test_native_pdf_download_renders_png_without_zip_parsing(self):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("Native PDF image", "native-pdf-image")
         client = Mock()
@@ -694,7 +694,7 @@ class TestPdfRenderingDefault:
         arguments,
         error_type,
     ):
-        import remarkable_mcp.tools as tools
+        import remarkable_mcp.core.tools as tools
 
         document = _document("Native PDF limits", "native-pdf-limits")
         client = Mock()
@@ -716,9 +716,9 @@ class TestCanvasArchivedLookup:
     async def test_canvas_resolves_live_namesake(self, monkeypatch):
         from PIL import Image
 
-        import remarkable_mcp.api as api
-        import remarkable_mcp.extract as extract
-        from remarkable_mcp.app_canvas import _render_canvas_page
+        import remarkable_mcp.documents.extract as extract
+        import remarkable_mcp.transports.api as api
+        from remarkable_mcp.core.app_canvas import _render_canvas_page
 
         image = io.BytesIO()
         Image.new("RGB", (12, 16), "white").save(image, "PNG")
@@ -750,9 +750,9 @@ class TestCanvasArchivedLookup:
 
     @pytest.mark.asyncio
     async def test_canvas_excludes_trash_from_suggestions(self, monkeypatch):
-        import remarkable_mcp.api as api
-        import remarkable_mcp.extract as extract
-        from remarkable_mcp.app_canvas import _render_canvas_page
+        import remarkable_mcp.documents.extract as extract
+        import remarkable_mcp.transports.api as api
+        from remarkable_mcp.core.app_canvas import _render_canvas_page
 
         trashed = _document("Meeting notes trash", "trash", parent="trash")
         live = _document("Meeting notes live", "live")
@@ -792,7 +792,7 @@ class _ResourceRecorder:
 
 @pytest.fixture
 def resource_registry(monkeypatch):
-    import remarkable_mcp.resources as resources
+    import remarkable_mcp.core.resources as resources
 
     recorder = _ResourceRecorder()
     monkeypatch.setattr(resources, "mcp", recorder)
@@ -806,7 +806,7 @@ def resource_registry(monkeypatch):
 
 class TestArchivedResourceRegistration:
     def test_synchronous_registration_skips_trash(self, monkeypatch, resource_registry):
-        import remarkable_mcp.api as api
+        import remarkable_mcp.transports.api as api
 
         resources, recorder = resource_registry
         trashed = _document("Duplicate", "trash", parent="trash")
@@ -822,7 +822,7 @@ class TestArchivedResourceRegistration:
 
     @pytest.mark.asyncio
     async def test_background_registration_skips_trash(self, monkeypatch, resource_registry):
-        import remarkable_mcp.api as api
+        import remarkable_mcp.transports.api as api
 
         resources, recorder = resource_registry
         trashed = _document("Archived notes", "trash", parent="trash")

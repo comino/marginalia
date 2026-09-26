@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from remarkable_mcp.workflows import autopilot
+from remarkable_mcp.workflows.live import autopilot
 
 
 @pytest.fixture(autouse=True)
@@ -191,7 +191,7 @@ def test_sigterm_stops_the_daemon_cleanly(tmp_path):
     # closing the notification socket) and a check that needs no network.
     script = (
         "import asyncio\n"
-        "from remarkable_mcp.workflows import autopilot as a, live\n"
+        "from remarkable_mcp.workflows.live import autopilot as a, watcher as live\n"
         "class FakeWatcher:\n"
         "    def __init__(self, **kw): self.q = asyncio.Queue()\n"
         "    def subscribe(self): return self.q\n"

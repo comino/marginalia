@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests for the local-directory transport (remarkable_mcp.local_dir).
+Tests for the local-directory transport (remarkable_mcp.transports.local_dir).
 
 Covers client behaviour against a fake xochitl-style directory, directory
 resolution, transport selection in api.get_rmapi(), and the read-only
@@ -13,8 +13,8 @@ import zipfile
 
 import pytest
 
-from remarkable_mcp import api
-from remarkable_mcp.local_dir import (
+from remarkable_mcp.transports import api
+from remarkable_mcp.transports.local_dir import (
     LocalDirClient,
     check_local_dir_available,
     create_local_dir_client,
@@ -216,7 +216,7 @@ class TestDirectoryResolution:
     def test_no_dir_found_raises(self, monkeypatch, tmp_path):
         monkeypatch.delenv("REMARKABLE_LOCAL_DIR", raising=False)
         monkeypatch.setattr(
-            "remarkable_mcp.local_dir.DEFAULT_DIR_CANDIDATES",
+            "remarkable_mcp.transports.local_dir.DEFAULT_DIR_CANDIDATES",
             (str(tmp_path / "missing"),),
         )
         with pytest.raises(RuntimeError, match="REMARKABLE_LOCAL_DIR"):
@@ -224,7 +224,7 @@ class TestDirectoryResolution:
 
     def test_find_default_local_dir(self, xochitl_dir, monkeypatch):
         monkeypatch.setattr(
-            "remarkable_mcp.local_dir.DEFAULT_DIR_CANDIDATES",
+            "remarkable_mcp.transports.local_dir.DEFAULT_DIR_CANDIDATES",
             (str(xochitl_dir),),
         )
         assert find_default_local_dir() == xochitl_dir
@@ -264,7 +264,7 @@ class TestTransportSelection:
         monkeypatch.delenv("REMARKABLE_LOCAL_DIR", raising=False)
         monkeypatch.setattr(api, "REMARKABLE_USE_LOCAL_DIR", True)
         monkeypatch.setattr(
-            "remarkable_mcp.local_dir.DEFAULT_DIR_CANDIDATES",
+            "remarkable_mcp.transports.local_dir.DEFAULT_DIR_CANDIDATES",
             (str(tmp_path / "missing"),),
         )
         monkeypatch.setattr(api, "_is_cloud_token_available", lambda: True)
@@ -278,7 +278,7 @@ class TestTransportSelection:
         monkeypatch.delenv("REMARKABLE_LOCAL_DIR", raising=False)
         monkeypatch.setattr(api, "REMARKABLE_USE_LOCAL_DIR", True)
         monkeypatch.setattr(
-            "remarkable_mcp.local_dir.DEFAULT_DIR_CANDIDATES",
+            "remarkable_mcp.transports.local_dir.DEFAULT_DIR_CANDIDATES",
             (str(tmp_path / "missing"),),
         )
         monkeypatch.setattr(api, "_is_cloud_token_available", lambda: False)
@@ -293,7 +293,7 @@ class TestTransportSelection:
             api.get_rmapi()
 
     def test_cloud_fallback_preserves_local_read_only_mode(self, monkeypatch, tmp_path):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         monkeypatch.setenv("REMARKABLE_LOCAL_DIR", str(tmp_path / "missing"))
         monkeypatch.setattr(api, "REMARKABLE_USE_LOCAL_DIR", True)
@@ -314,21 +314,21 @@ class TestTransportSelection:
 
 class TestReadOnlyGuarantee:
     def test_write_disabled_in_local_dir_mode(self, monkeypatch):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         monkeypatch.setenv("REMARKABLE_USE_LOCAL_DIR", "1")
         monkeypatch.delenv("REMARKABLE_READ_ONLY", raising=False)
         assert write_tools.write_enabled() is False
 
     def test_local_dir_not_cloud_mode(self, monkeypatch):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         monkeypatch.setenv("REMARKABLE_USE_LOCAL_DIR", "1")
         assert write_tools._is_cloud_mode() is False
         assert write_tools._is_local_dir_mode() is True
 
     def test_write_enabled_without_local_dir(self, monkeypatch):
-        from remarkable_mcp import write_tools
+        from remarkable_mcp.core import write_tools
 
         monkeypatch.delenv("REMARKABLE_USE_LOCAL_DIR", raising=False)
         monkeypatch.delenv("REMARKABLE_LOCAL_DIR", raising=False)
@@ -337,7 +337,7 @@ class TestReadOnlyGuarantee:
 
     @pytest.mark.asyncio
     async def test_status_explains_local_dir_read_only(self, client, monkeypatch):
-        from remarkable_mcp import tools
+        from remarkable_mcp.core import tools
 
         monkeypatch.setenv("REMARKABLE_USE_LOCAL_DIR", "1")
         monkeypatch.delenv("REMARKABLE_READ_ONLY", raising=False)

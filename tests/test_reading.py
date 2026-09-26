@@ -5,7 +5,7 @@ import builtins
 
 import pytest
 
-from remarkable_mcp.workflows import web
+from remarkable_mcp.workflows.reading import web
 from test_workflows import (  # noqa: F401  (fixtures)
     FINELINER,
     HIGHLIGHTER,
@@ -72,7 +72,7 @@ def test_text_fragment_links():
 
 
 def test_clip_and_reading_notes(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import reading_tools as rt
+    from remarkable_mcp.workflows.reading import tools as rt
 
     sent = _json_of(asyncio.run(rt.remarkable_clip(url="https://example.com/lf", html=HTML)))
     item = sent["item"]
@@ -104,7 +104,7 @@ def test_clip_and_reading_notes(cloud):  # noqa: F811
 
 
 def test_clip_needs_input(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import reading_tools as rt
+    from remarkable_mcp.workflows.reading import tools as rt
 
     assert _json_of(asyncio.run(rt.remarkable_clip()))["_error"]["type"] == "invalid_arguments"
 
@@ -154,7 +154,7 @@ def _fetched(resp):
 
 
 def test_reading_notes_mark_seen_false_keeps_marks_new(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import reading_tools as rt
+    from remarkable_mcp.workflows.reading import tools as rt
 
     item = _json_of(asyncio.run(rt.remarkable_clip(url="https://example.com/lf", html=HTML)))[
         "item"

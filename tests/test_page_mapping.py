@@ -3,7 +3,7 @@
 Regression coverage for formatVersion 1 documents (flat ``pages`` list plus a
 ``redirectionPageMap``), which were previously misread as user-added pages so
 ``render_merged`` fell back to an annotation-only render for cloud-imported
-PDFs. See ``_resolve_pdf_page_index`` in ``remarkable_mcp/extract.py``.
+PDFs. See ``_resolve_pdf_page_index`` in ``remarkable_mcp/documents/extract.py``.
 """
 
 import json
@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from remarkable_mcp.extract import (
+from remarkable_mcp.documents.extract import (
     _annotation_page_viewbox,
     _extract_page_annotations,
     _get_ordered_rm_files,
@@ -232,7 +232,7 @@ def test_glyph_range_rectangles_apply_text_anchor_offsets():
     block = SimpleNamespace(parent_id=parent_id, item=SimpleNamespace(value=glyph_range))
 
     with patch(
-        "remarkable_mcp.extract._v6_group_offsets",
+        "remarkable_mcp.documents.extract._v6_group_offsets",
         return_value={parent_id: (4.0, 6.0)},
     ):
         paths, coords = _v6_paths_from_blocks([block], anchor_pos={"anchor": 1})
@@ -307,7 +307,7 @@ def test_mapped_pdf_fallback_uses_redirected_source_page():
             zf.writestr("doc.pdf", b"synthetic-pdf")
 
         with patch(
-            "remarkable_mcp.extract.render_tablet_pdf_page_to_png",
+            "remarkable_mcp.documents.extract.render_tablet_pdf_page_to_png",
             return_value=b"png",
         ) as render_pdf:
             assert render_mapped_pdf_page_from_document_zip(zip_path, page=1) == (
@@ -340,7 +340,7 @@ def test_mapped_pdf_fallback_does_not_invent_underlay_for_user_added_page():
             )
             zf.writestr("doc.pdf", b"synthetic-pdf")
 
-        with patch("remarkable_mcp.extract.render_tablet_pdf_page_to_png") as render_pdf:
+        with patch("remarkable_mcp.documents.extract.render_tablet_pdf_page_to_png") as render_pdf:
             assert render_mapped_pdf_page_from_document_zip(zip_path, page=1) == (
                 None,
                 True,

@@ -4,14 +4,14 @@ import asyncio
 
 import pymupdf
 
-from remarkable_mcp.workflows.inbox import (
+from remarkable_mcp.workflows.inbox.inbox import (
     LINE_PITCH,
     TEMPLATE_TOP,
     match_known,
     render_inbox_template,
     segment_entries,
 )
-from remarkable_mcp.workflows.ink import load_document_ink_from_zip
+from remarkable_mcp.workflows.ink.page import load_document_ink_from_zip
 from test_workflows import (  # noqa: F401  (fixtures)
     FINELINER,
     _doc_zip,
@@ -70,7 +70,7 @@ def test_entry_identity_survives_additions():
 
 
 def test_inbox_tool_loop(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import inbox_tools as t
+    from remarkable_mcp.workflows.inbox import tools as t
 
     setup = _json_of(asyncio.run(t.remarkable_inbox_setup(pages=2)))
     assert setup["uploaded"] is True
@@ -102,14 +102,14 @@ def test_inbox_tool_loop(cloud):  # noqa: F811
 
 
 def test_inbox_requires_setup(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import inbox_tools as t
+    from remarkable_mcp.workflows.inbox import tools as t
 
     err = _json_of(asyncio.run(t.remarkable_inbox(name="nope")))
     assert err["_error"]["type"] == "inbox_not_set_up"
 
 
 def test_erasing_the_strike_restores_the_entry(cloud):  # noqa: F811
-    from remarkable_mcp.workflows import inbox_tools as t
+    from remarkable_mcp.workflows.inbox import tools as t
 
     asyncio.run(t.remarkable_inbox_setup(pages=1))
     doc = next(d for d in cloud.docs.values() if d.VissibleName == "Agent Inbox")

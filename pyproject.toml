@@ -54,10 +54,10 @@ Issues = "https://github.com/comino/marginalia/issues"
 
 [project.scripts]
 marginalia = "remarkable_mcp.cli:main"
-marginalia-autopilot = "remarkable_mcp.workflows.autopilot:main"
+marginalia-autopilot = "remarkable_mcp.workflows.live.autopilot:main"
 # Original names, kept so existing configs and service files keep working.
 remarkable-mcp = "remarkable_mcp.cli:main"
-remarkable-autopilot = "remarkable_mcp.workflows.autopilot:main"
+remarkable-autopilot = "remarkable_mcp.workflows.live.autopilot:main"
 
 [build-system]
 requires = ["hatchling"]
