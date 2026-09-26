@@ -78,3 +78,8 @@ BLOG_DRAFT.md
 
 # Smoke-test run artifacts (regenerated on every run)
 smoke/snapshots/
+
+# Local workflow/runtime state (never commit)
+agent.log
+trmnl_state/
+*.log

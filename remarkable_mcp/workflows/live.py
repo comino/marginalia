@@ -37,6 +37,10 @@ POLL_SECONDS = 60.0
 # every few seconds; refreshes are coalesced to one per window, with a trailing
 # refresh so the last change of a burst is never missed.
 MIN_REFRESH_SECONDS = 3.0
+# Per-subscriber backlog cap: a consumer that stops reading loses the oldest
+# events instead of growing memory for days.
+MAX_QUEUE = 500
+MAX_BACKOFF_SECONDS = 300.0
 
 
 @dataclass
@@ -147,11 +151,14 @@ class Watcher:
         self._lock = asyncio.Lock()
         self._last_refresh = 0.0
         self._trailing: Optional[asyncio.Task] = None
+        self.errors = 0  # consecutive failed metadata reads (drives backoff)
+        self.errors_total = 0  # failed metadata reads since start
+        self.last_error: Optional[str] = None
 
     # ------------------------------------------------------------ consumers
 
     def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
+        q: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE)
         self._queues.append(q)
         return q
 
@@ -175,7 +182,7 @@ class Watcher:
 
         async def later():
             await asyncio.sleep(wait)
-            await self.refresh()
+            await self.safe_refresh()
 
         self._trailing = asyncio.create_task(later())
 
@@ -191,7 +198,26 @@ class Watcher:
             self.state = new
         for ch in changes:
             for q in list(self._queues):
+                if q.full():
+                    q.get_nowait()  # drop the oldest event for a stalled consumer
                 q.put_nowait(ch)
+        return changes
+
+    async def safe_refresh(self) -> List[Change]:
+        """refresh() that never raises: errors are counted and backed off."""
+        try:
+            changes = await self.refresh()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.errors += 1
+            self.errors_total += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            wait = min(MAX_BACKOFF_SECONDS, 5.0 * 2 ** min(self.errors, 6))
+            logger.warning("metadata refresh failed (%s); retrying in %.0fs", exc, wait)
+            await asyncio.sleep(wait)
+            return []
+        self.errors = 0
         return changes
 
     @staticmethod
@@ -218,7 +244,8 @@ class Watcher:
                 raise
 
     async def run(self) -> None:
-        await self.refresh()
+        while self.state is None:  # the first snapshot is the baseline; keep trying
+            await self.safe_refresh()
         failures = 0
         while True:
             try:
@@ -246,13 +273,13 @@ class Watcher:
                 except Exception:
                     pass
             # Catch anything that synced while we were reconnecting.
-            await self.refresh()
+            await self.safe_refresh()
 
     async def _poll_for(self, seconds: float) -> None:
         end = time.time() + seconds
         while time.time() < end:
             await asyncio.sleep(min(self.poll_seconds, max(0.0, end - time.time())))
-            await self.refresh()
+            await self.safe_refresh()
 
 
 def _is_sync_event(raw) -> bool:

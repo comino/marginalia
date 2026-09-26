@@ -192,6 +192,8 @@ async def remarkable_live_status() -> str:
             if w.last_event
             else None,
             "documents_tracked": len(w.state or {}),
+            "refresh_errors": w.errors_total,
+            "last_error": w.last_error,
         },
         "socket = push notifications; polling = fallback every 20s.",
     )
