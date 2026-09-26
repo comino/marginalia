@@ -198,3 +198,39 @@ def test_outage_does_not_spin(monkeypatch):
     asyncio.run(pilot.check())
     asyncio.run(pilot.check())
     assert pilot.mirror_due >= _t.time() + 100  # backs off instead of retrying every second
+
+
+def test_sigterm_stops_the_daemon_cleanly(tmp_path):
+    """systemd stops the service with SIGTERM: exit 0 and say so, not a crash."""
+    import os
+    import signal
+    import subprocess
+    import time
+
+    script = (
+        "import asyncio, sys\n"
+        "from remarkable_mcp.workflows import autopilot as a\n"
+        "async def idle(self):\n"
+        "    print('ready', flush=True)\n"
+        "    await asyncio.sleep(3600)\n"
+        "a.Autopilot.run = idle\n"
+        "a.main([])\n"
+    )
+    env = dict(os.environ, REMARKABLE_AUTOPILOT_CONFIG=str(tmp_path / "none.json"))
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        assert proc.stdout.readline().strip() == "ready"
+        time.sleep(0.2)
+        proc.send_signal(signal.SIGTERM)
+        _, err = proc.communicate(timeout=20)
+    finally:
+        proc.kill()
+    assert proc.returncode == 0, err
+    assert "autopilot stopped" in err
+    assert "Traceback" not in err

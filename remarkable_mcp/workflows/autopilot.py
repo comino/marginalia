@@ -318,7 +318,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             )
         )
         return
-    asyncio.run(pilot.run())
+
+    def _stop(signum, frame):  # systemd stops the service with SIGTERM
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _stop)
+    try:
+        asyncio.run(pilot.run())
+    except KeyboardInterrupt:
+        logger.info("autopilot stopped")
 
 
 if __name__ == "__main__":
