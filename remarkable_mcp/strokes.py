@@ -19,7 +19,7 @@ page. Instead we:
    bytes.
 
 The original bytes are preserved exactly as a prefix, so nothing the device
-wrote is ever rewritten. See ``test_server.py`` for the regression guard that
+wrote is ever rewritten. See ``tests/test_server.py`` for the regression guard that
 asserts this property (and that a naive round-trip does *not* byte-match).
 
 Coordinate model

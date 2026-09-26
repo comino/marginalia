@@ -30,7 +30,7 @@ jobs:
       - uses: SamMorrowDrums/mcp-server-diff@v3
         with:
           install_command: uv sync --frozen
-          start_command: uv run python server.py
+          start_command: uv run marginalia
           server_timeout: "30"
           fail_on_diff: "false"
           # Keep the probe hermetic: registration never reaches a real account.

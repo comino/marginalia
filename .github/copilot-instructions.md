@@ -68,10 +68,10 @@ uv run pytest -v -m "not slow"
 
 ```bash
 # Run the MCP server directly
-uv run python server.py
+uv run marginalia
 
 # Register a new device (one-time setup)
-uv run python server.py --register <one-time-code>
+uv run marginalia --register <one-time-code>
 
 # Run as installed package
 uv run remarkable-mcp
@@ -107,7 +107,6 @@ uv run ruff format .
 
 ```
 remarkable-mcp/
-├── server.py              # Entry point (backwards compatible)
 ├── remarkable_mcp/
 │   ├── server.py          # MCPServer and transports
 │   ├── tools.py           # Read and render tools
@@ -145,7 +144,7 @@ remarkable-mcp/
 4. **Installation** - Keep installation instructions accurate
 5. **Dependencies** - Note any new required system dependencies (e.g., Tesseract for OCR)
 
-When modifying `server.py`:
+When modifying `remarkable_mcp/server.py`:
 - If you add a tool, update the README tool table and examples.
 - If you change tool parameters, update examples and `docs/tools.md`.
 - If you add a dependency, update installation and development docs.

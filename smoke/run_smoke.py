@@ -999,7 +999,7 @@ async def run_mode(mode: str, rec: Recorder, read_only: bool):
         "REMARKABLE_SSH_TRACE": "1",
         **spec["env"],
     }
-    server_args = ["server.py", *spec["args"]]
+    server_args = ["-m", "remarkable_mcp", *spec["args"]]
     if read_only:
         server_args.append("--read-only")
     params = StdioServerParameters(

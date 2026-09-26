@@ -26,7 +26,6 @@ uv run pytest -v
 
 ```
 remarkable-mcp/
-├── server.py              # Entry point (backwards compatible)
 ├── remarkable_mcp/
 │   ├── server.py           # MCPServer and transports
 │   ├── tools.py            # Read and render tools
