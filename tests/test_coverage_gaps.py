@@ -209,7 +209,7 @@ def test_autopilot_once_cli(monkeypatch, capsys):
     monkeypatch.setattr(autopilot.Autopilot, "overview", fake_overview)
     autopilot.main(["--once"])
     out = json.loads(capsys.readouterr().out)
-    assert out["trmnl"] == ["REMARKABLE: nichts Neues", "1 warten auf dich"]
+    assert out["overview"]["waiting"] == 1 and "trmnl" not in out
     assert out["agent"] is False
 
 
@@ -217,10 +217,10 @@ def test_autopilot_config_file(tmp_path, monkeypatch):
     from remarkable_mcp.workflows import autopilot
 
     cfg = tmp_path / "ap.json"
-    cfg.write_text(json.dumps({"trmnl_slot": None, "debounce_seconds": 5}))
+    cfg.write_text(json.dumps({"agent_timeout_seconds": 60, "debounce_seconds": 5}))
     monkeypatch.setenv("REMARKABLE_AUTOPILOT_CONFIG", str(cfg))
     loaded = autopilot.load_config()
-    assert loaded["trmnl_slot"] is None and loaded["debounce_seconds"] == 5
+    assert loaded["agent_timeout_seconds"] == 60 and loaded["debounce_seconds"] == 5
     assert loaded["min_agent_interval_seconds"] == autopilot.DEFAULTS["min_agent_interval_seconds"]
 
 

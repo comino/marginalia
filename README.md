@@ -102,7 +102,7 @@ flowchart LR
 ## Tools
 
 <details>
-<summary><b>Workflow tools</b> (29, plus 11 for TRMNL): open to expand</summary>
+<summary><b>Workflow tools</b> (29): open to expand</summary>
 
 | Area | Tools |
 |---|---|
@@ -114,7 +114,6 @@ flowchart LR
 | Structure | `remarkable_sketch`, `remarkable_regions`, `remarkable_table`, `remarkable_wireframe`, `remarkable_math` |
 | Reading | `remarkable_clip`, `remarkable_reading_notes`, `remarkable_reading_list`, `remarkable_ink_digest` |
 | Live | `remarkable_live_watch`, `remarkable_live_status` |
-| TRMNL e-ink display | `trmnl_status`, `trmnl_set_slots`, … (11 tools, only when a TRMNL is configured) |
 
 Full documentation: **[docs/workflows.md](docs/workflows.md)**.
 </details>
@@ -135,11 +134,17 @@ Prompts: `tablet_check_in`, `review_draft`, `ask_on_tablet`, `triage_on_paper`,
 ## Autopilot
 
 `marginalia-autopilot` reacts to the tablet without anyone opening a session.
-It watches the sync stream, mirrors a status line to a
-[TRMNL](https://trmnl.com) display, and can optionally start a headless agent
-when something needs attention. Run it as a systemd user service
+It watches the sync stream and starts a headless agent of your choice when
+something needs attention. Run it as a systemd user service
 ([contrib/remarkable-autopilot.service](contrib/remarkable-autopilot.service));
 details are in [docs/workflows.md#autopilot](docs/workflows.md#autopilot).
+
+## TRMNL display tools
+
+A separate, independent tool set for a [TRMNL](https://trmnl.com) e-ink
+display: `trmnl_set_slots`, `trmnl_send`, `trmnl_image`, `trmnl_status`, …
+(11 tools, registered only when a TRMNL is configured). Agents decide what to
+show; nothing is mirrored automatically. See **[docs/trmnl.md](docs/trmnl.md)**.
 
 ## Configuration
 

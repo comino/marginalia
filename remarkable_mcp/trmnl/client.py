@@ -30,7 +30,7 @@ from .config import Config
 
 # TRMNL sits behind Cloudflare, which rejects generic library user agents
 # (Python-urllib/x.y gets a 403 "error 1010"), so every request identifies itself.
-USER_AGENT = f"remarkable-mcp-trmnl/{__version__} (+https://github.com/comino/remarkable-mcp)"
+USER_AGENT = f"remarkable-mcp-trmnl/{__version__} (+https://github.com/comino/marginalia)"
 
 SLOT_COUNT = 6
 MAX_LINES_PER_SLOT = 3

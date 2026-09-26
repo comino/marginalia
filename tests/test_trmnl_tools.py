@@ -132,3 +132,30 @@ async def test_status_never_shows_the_plugin_uuid(tmp_path, monkeypatch):
     s = _text(await server.mcp.call_tool("trmnl_status", {}))
     assert secret not in s and secret[4:] not in s
     assert "custom_plugins/0f1e…" in s
+
+
+def test_trmnl_and_remarkable_sides_are_independent():
+    """TRMNL is a parallel tool set: only the server wires both sides together."""
+    import ast
+    from pathlib import Path
+
+    pkg = Path(__file__).parent.parent / "remarkable_mcp"
+
+    def imports(path):
+        out = set()
+        for n in ast.walk(ast.parse(path.read_text())):
+            if isinstance(n, ast.ImportFrom) and n.module and n.level == 0:
+                out.add(n.module)
+            elif isinstance(n, ast.Import):
+                out.update(a.name for a in n.names)
+        return out
+
+    for path in (pkg / "trmnl").rglob("*.py"):
+        leaks = {m for m in imports(path) if m.startswith("remarkable_mcp")}
+        leaks = {m for m in leaks if not m.startswith("remarkable_mcp.trmnl")}
+        assert not leaks, f"{path.name} imports {leaks}"
+    for path in pkg.rglob("*.py"):
+        if "trmnl" in path.parts or path.name == "server.py":
+            continue
+        users = {m for m in imports(path) if "trmnl" in m}
+        assert not users, f"{path.relative_to(pkg)} imports {users}"

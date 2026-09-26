@@ -1,11 +1,11 @@
 """Autopilot: react to the tablet without anyone opening a session.
 
 Runs the live watcher. When ink changes and settles, it checks every tracked
-workflow (the same check as ``remarkable_whats_new``) and
-
-- mirrors a short status into one TRMNL slot (rate-limited, only on change),
-- optionally starts a headless agent (e.g. ``claude -p``) with the
-  tablet_check_in prompt when something needs attention.
+workflow (the same check as ``remarkable_whats_new``) and starts a headless
+agent (e.g. ``claude -p``) with the tablet_check_in prompt when something
+needs attention. What the agent does then - reply on the tablet, post to a
+TRMNL display, open an issue - is up to its prompt and tools; the autopilot
+itself only knows the tablet.
 
 Configuration: ``~/.config/remarkable-mcp/autopilot.json`` (all keys optional)::
 
@@ -14,9 +14,7 @@ Configuration: ``~/.config/remarkable-mcp/autopilot.json`` (all keys optional)::
       "prompt": "...",                 # default: the tablet_check_in prompt
       "debounce_seconds": 60,          # quiet time after the last change
       "min_agent_interval_seconds": 300,
-      "agent_timeout_seconds": 900,
-      "trmnl_slot": 5,                 # null disables the mirror
-      "trmnl_min_interval_seconds": 900
+      "agent_timeout_seconds": 900
     }
 
 ``agent_command`` is off by default: the agent then acts with your
@@ -26,7 +24,7 @@ CLI::
 
     remarkable-autopilot            run forever
     remarkable-autopilot --once     one check now (prints what it would do)
-    remarkable-autopilot --dry-run  run forever, but never push or start agents
+    remarkable-autopilot --dry-run  run forever, but never start agents
 """
 
 from __future__ import annotations
@@ -43,7 +41,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from remarkable_mcp.workflows.state import Store, state_root
+from remarkable_mcp.workflows.state import state_root
 
 logger = logging.getLogger("remarkable_autopilot")
 
@@ -61,18 +59,11 @@ DEFAULTS = {
     "debounce_seconds": 60,
     "min_agent_interval_seconds": 300,
     "agent_timeout_seconds": 900,
-    "trmnl_slot": 5,
-    "trmnl_min_interval_seconds": 900,
     "watch_min_refresh_seconds": 30,
 }
 
-_KIND_DE = {
-    "review": "Review",
-    "form": "Formular",
-    "article": "Artikel",
-    "inbox": "Inbox",
-}
-_STATUS_DE = {"annotated": "neue Tinte", "done": "fertig", "collected": "gelesen"}
+# Keys of earlier versions (the TRMNL status mirror); ignored with a warning.
+_RETIRED = ("trmnl_slot", "trmnl_min_interval_seconds")
 
 
 def load_config() -> dict:
@@ -80,6 +71,14 @@ def load_config() -> dict:
     path = config_path()
     if path.is_file():
         cfg.update(json.loads(path.read_text()))
+    for key in _RETIRED:
+        if cfg.pop(key, None) is not None:
+            logger.warning(
+                "%s: %r is no longer used - the autopilot does not drive the TRMNL "
+                "display; let the agent use the trmnl_* tools instead",
+                path,
+                key,
+            )
     return cfg
 
 
@@ -89,20 +88,6 @@ def default_prompt() -> str:
     return tablet_check_in_prompt()[0]["content"]
 
 
-def trmnl_lines(overview: dict) -> List[str]:
-    """At most 3 lines of 45 chars (the TRMNL slot rules), German like the rest."""
-    att = overview.get("attention", [])
-    waiting = overview.get("waiting", 0)
-    if not att:
-        return ["REMARKABLE: nichts Neues", f"{waiting} warten auf dich" if waiting else ""]
-    lines = [f"REMARKABLE: {len(att)} neu"]
-    for item in att[:2]:
-        kind = _KIND_DE.get(item["kind"], item["kind"])
-        title = (item.get("title") or item["id"])[:28]
-        lines.append(f"{kind}: {title}")
-    return [ln[:45] for ln in lines if ln]
-
-
 class Autopilot:
     def __init__(self, config: dict, dry_run: bool = False):
         self.cfg = config
@@ -110,13 +95,6 @@ class Autopilot:
         self.last_agent_run = 0.0
         self.last_agent_signature: Optional[str] = None
         self.log_path = state_root() / "autopilot.log"
-        # What is on the display survives restarts: a restart must not spend
-        # one of the display's 12 pushes/hour re-sending the same text.
-        self._store = Store("autopilot")
-        saved = self._store.get("trmnl") or {}
-        self.last_trmnl_push = float(saved.get("pushed_at", 0.0))
-        self.last_trmnl_text: Optional[str] = saved.get("text")
-        self.mirror_due: Optional[float] = None  # changed text waiting for the rate window
         self.overview_failures = 0
 
     # ------------------------------------------------------------ checks
@@ -127,7 +105,7 @@ class Autopilot:
         return json.loads(await remarkable_whats_new())
 
     async def check(self) -> dict:
-        """One pass: overview -> TRMNL mirror -> maybe agent. Never raises."""
+        """One pass: overview -> maybe agent. Never raises."""
         try:
             ov = await self.overview()
         except Exception as exc:  # corrupt state, network ... the loop must survive
@@ -135,53 +113,13 @@ class Autopilot:
         if "_error" in ov:
             self.overview_failures += 1
             logger.warning("overview failed: %s", ov["_error"])
-            if self.mirror_due is not None:
-                # Don't retry every second through an outage: back off.
-                self.mirror_due = time.time() + min(900.0, 60.0 * self.overview_failures)
             return ov
         self.overview_failures = 0
-        try:
-            self.mirror(ov)
-        except Exception as exc:
-            logger.warning("TRMNL mirror failed: %s", exc)
         try:
             await self.maybe_run_agent(ov)
         except Exception as exc:
             logger.warning("agent run failed: %s", exc)
         return ov
-
-    # ------------------------------------------------------------ TRMNL
-
-    def mirror(self, overview: dict) -> Optional[str]:
-        slot = self.cfg.get("trmnl_slot")
-        if slot is None:
-            return None
-        text = "\n".join(trmnl_lines(overview))
-        if text == self.last_trmnl_text:
-            self.mirror_due = None
-            return None
-        wait = self.cfg["trmnl_min_interval_seconds"] - (time.time() - self.last_trmnl_push)
-        if wait > 0:
-            self.mirror_due = time.time() + wait  # re-check when the window opens
-            return None
-        self.mirror_due = None
-        if self.dry_run:
-            logger.info("[dry-run] TRMNL slot %s <- %r", slot, text)
-            self.last_trmnl_text = text
-            return text
-        from remarkable_mcp.trmnl import tools as trmnl
-
-        if not trmnl.configured():
-            return None
-        result = trmnl.trmnl_set_slots({str(slot): text.split("\n")})
-        if result.startswith("ERROR"):
-            logger.warning("TRMNL push failed: %s", result)
-            return None
-        self.last_trmnl_text = text
-        self.last_trmnl_push = time.time()
-        self._store.put("trmnl", {"text": text, "pushed_at": self.last_trmnl_push})
-        logger.info("TRMNL slot %s updated", slot)
-        return text
 
     # ------------------------------------------------------------ agent
 
@@ -240,13 +178,10 @@ class Autopilot:
                     exc = None if task.cancelled() else task.exception()
                     logger.warning("watcher stopped (%r); restarting it", exc)
                     task = asyncio.create_task(watcher.run())
-                idle = 900.0
-                if self.mirror_due is not None:
-                    idle = max(1.0, min(idle, self.mirror_due - time.time()))
                 try:
-                    await asyncio.wait_for(queue.get(), timeout=idle)
+                    await asyncio.wait_for(queue.get(), timeout=900.0)
                 except asyncio.TimeoutError:
-                    await self.check()  # periodic safety net / pending TRMNL update
+                    await self.check()  # periodic safety net
                     continue
                 # Wait for the user to pause: reset the timer on every new change.
                 while True:
@@ -304,14 +239,22 @@ def main(argv: Optional[List[str]] = None) -> None:
     logging.basicConfig(
         level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(message)s"
     )
-    pilot = Autopilot(load_config(), dry_run=args.dry_run or args.once)
+    cfg = load_config()
+    if not (args.once or args.dry_run or cfg.get("agent_command")):
+        # Watching the tablet costs sync-API requests shared with every client;
+        # without an agent to start there is nothing to watch for.
+        logger.info(
+            "nothing to do: no agent_command in %s - the autopilot only starts agents",
+            config_path(),
+        )
+        return
+    pilot = Autopilot(cfg, dry_run=args.dry_run or args.once)
     if args.once:
         ov = asyncio.run(pilot.check())
         print(
             json.dumps(
                 {
                     "overview": ov,
-                    "trmnl": trmnl_lines(ov) if "_error" not in ov else None,
                     "agent": pilot.agent_argv() is not None,
                 },
                 indent=2,

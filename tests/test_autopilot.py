@@ -1,4 +1,4 @@
-"""Tests for the autopilot: TRMNL mirror text/rate limits and agent triggering."""
+"""Tests for the autopilot: agent triggering, config, lifecycle."""
 
 import asyncio
 import sys
@@ -30,32 +30,42 @@ ATT = {
 QUIET = {"attention": [], "waiting": 3}
 
 
-def test_trmnl_lines_follow_slot_rules():
-    lines = autopilot.trmnl_lines(ATT)
-    assert lines[0] == "REMARKABLE: 3 neu"
-    assert len(lines) <= 3 and all(len(ln) <= 45 for ln in lines)
-    assert lines[1].startswith("Review: A Disposable DuckDB")
-    assert autopilot.trmnl_lines(QUIET) == ["REMARKABLE: nichts Neues", "3 warten auf dich"]
+def test_autopilot_does_not_touch_the_trmnl_display():
+    """TRMNL is a separate tool set for agents; the autopilot only knows the tablet."""
+    import ast
+    from pathlib import Path
+
+    src = Path(autopilot.__file__).read_text()
+    imported = {
+        n.module if isinstance(n, ast.ImportFrom) else a.name
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.Import, ast.ImportFrom))
+        for a in n.names
+    }
+    assert not any("trmnl" in (m or "") for m in imported)
 
 
-def test_mirror_only_on_change_and_rate_limited(monkeypatch):
-    pilot = autopilot.Autopilot({**autopilot.DEFAULTS, "trmnl_min_interval_seconds": 900})
-    pushed = []
-    monkeypatch.setattr(
-        "remarkable_mcp.trmnl.tools.trmnl_set_slots", lambda slots: pushed.append(slots) or "{}"
-    )
-    monkeypatch.setattr("remarkable_mcp.trmnl.tools.configured", lambda: True)
-    assert pilot.mirror(ATT) is not None
-    assert pilot.mirror(ATT) is None  # unchanged text: no push
-    assert pilot.mirror(QUIET) is None  # changed, but inside the rate window
-    pilot.last_trmnl_push -= 1000
-    assert pilot.mirror(QUIET) is not None
-    assert [list(p) for p in pushed] == [["5"], ["5"]]
+def test_retired_trmnl_keys_are_ignored_with_a_warning(tmp_path, monkeypatch, caplog):
+    cfg = tmp_path / "autopilot.json"
+    cfg.write_text('{"trmnl_slot": 5, "trmnl_min_interval_seconds": 900, "debounce_seconds": 5}')
+    monkeypatch.setenv("REMARKABLE_AUTOPILOT_CONFIG", str(cfg))
+    with caplog.at_level("WARNING", logger="remarkable_autopilot"):
+        loaded = autopilot.load_config()
+    assert "trmnl_slot" not in loaded and "trmnl_min_interval_seconds" not in loaded
+    assert loaded["debounce_seconds"] == 5
+    assert "trmnl_slot" in caplog.text
 
 
-def test_mirror_disabled_without_slot():
-    pilot = autopilot.Autopilot({**autopilot.DEFAULTS, "trmnl_slot": None})
-    assert pilot.mirror(ATT) is None
+def test_without_an_agent_the_daemon_exits(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("REMARKABLE_AUTOPILOT_CONFIG", str(tmp_path / "none.json"))
+
+    def must_not_run(self):
+        raise AssertionError("the watcher must not start without an agent")
+
+    monkeypatch.setattr(autopilot.Autopilot, "run", must_not_run)
+    with caplog.at_level("INFO", logger="remarkable_autopilot"):
+        autopilot.main([])
+    assert "nothing to do" in caplog.text
 
 
 def test_agent_runs_once_per_state(tmp_path, monkeypatch):
@@ -140,21 +150,6 @@ def test_hung_agent_is_killed_with_its_children(tmp_path, monkeypatch):
         raise AssertionError("grandchild survived the timeout")
 
 
-def test_trmnl_state_survives_restart(tmp_path, monkeypatch):
-    monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
-    pushed = []
-    monkeypatch.setattr(
-        "remarkable_mcp.trmnl.tools.trmnl_set_slots", lambda slots: pushed.append(slots) or "{}"
-    )
-    monkeypatch.setattr("remarkable_mcp.trmnl.tools.configured", lambda: True)
-    first = autopilot.Autopilot(dict(autopilot.DEFAULTS))
-    assert first.mirror(ATT) is not None
-    restarted = autopilot.Autopilot(dict(autopilot.DEFAULTS))  # e.g. systemd restart
-    assert restarted.mirror(ATT) is None  # same text already on the display
-    assert restarted.mirror(QUIET) is None and restarted.mirror_due is not None  # scheduled
-    assert len(pushed) == 1
-
-
 def test_check_never_raises(monkeypatch, tmp_path):
     monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
     pilot = autopilot.Autopilot(dict(autopilot.DEFAULTS))
@@ -168,11 +163,11 @@ def test_check_never_raises(monkeypatch, tmp_path):
     async def fine():
         return ATT
 
-    def mirror_boom(ov):
-        raise TimeoutError("TRMNL read timed out")
+    async def agent_boom(ov):
+        raise TimeoutError("agent start timed out")
 
     monkeypatch.setattr(pilot, "overview", fine)
-    monkeypatch.setattr(pilot, "mirror", mirror_boom)
+    monkeypatch.setattr(pilot, "maybe_run_agent", agent_boom)
     assert asyncio.run(pilot.check()) == ATT
 
 
@@ -183,21 +178,6 @@ def test_unit_file_is_sane():
     assert "Environment=PATH=%h/.local/bin" in unit
     assert "StartLimitBurst" in unit and "Restart=on-failure" in unit
     assert "@main" not in unit  # pinned, not tracking a branch
-
-
-def test_outage_does_not_spin(monkeypatch):
-    import time as _t
-
-    pilot = autopilot.Autopilot(dict(autopilot.DEFAULTS))
-    pilot.mirror_due = _t.time() - 5  # a pending TRMNL update is overdue
-
-    async def down():
-        return {"_error": "network unreachable"}
-
-    monkeypatch.setattr(pilot, "overview", down)
-    asyncio.run(pilot.check())
-    asyncio.run(pilot.check())
-    assert pilot.mirror_due >= _t.time() + 100  # backs off instead of retrying every second
 
 
 def test_sigterm_stops_the_daemon_cleanly(tmp_path):
@@ -227,7 +207,9 @@ def test_sigterm_stops_the_daemon_cleanly(tmp_path):
         "a.Autopilot.check = check\n"
         "a.main([])\n"
     )
-    env = dict(os.environ, REMARKABLE_AUTOPILOT_CONFIG=str(tmp_path / "none.json"))
+    cfg = tmp_path / "autopilot.json"
+    cfg.write_text('{"agent_command": ["true"]}')  # without an agent it would just exit
+    env = dict(os.environ, REMARKABLE_AUTOPILOT_CONFIG=str(cfg))
     proc = subprocess.Popen(
         [sys.executable, "-c", script],
         stdout=subprocess.PIPE,

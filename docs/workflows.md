@@ -33,7 +33,6 @@ happen in the server, so a small model can run the workflows with a few calls.
 | `remarkable_math` | Handwritten math → LaTeX |
 | `remarkable_ink_digest` | What you wrote since yesterday, page by page |
 | `remarkable_live_watch` / `_status` | Follow the tablet near-live: wait for strokes, get the changed pages analysed |
-| `trmnl_*` (11 tools) | TRMNL e-ink display (only when a TRMNL config exists on the machine) |
 
 A separate program, `remarkable-autopilot`, runs these checks unattended; see
 [Autopilot](#autopilot).
@@ -290,28 +289,28 @@ pixels.
 
 `remarkable-autopilot` is a small daemon for this machine. It runs the same
 watcher. Once your writing settles, it checks every tracked workflow (the
-`remarkable_whats_new` logic) and then does two things:
+`remarkable_whats_new` logic) and, when something needs attention, starts a
+headless agent with the `tablet_check_in` prompt, once per new state. What the
+agent does then (reply on the tablet, open issues, post a line to a
+[TRMNL display](trmnl.md)) is up to its prompt and tools; the autopilot itself
+only knows the tablet.
 
-- **TRMNL mirror.** It writes a short German status line into one TRMNL slot
-  (default slot 5), only when the text changes and at most every 15 minutes,
-  so the 12-pushes-per-hour quota stays available for other agents.
-- **Agent run (off by default).** It starts a headless agent with the
-  `tablet_check_in` prompt, once per new state.
-
-Configuration lives in `~/.config/remarkable-mcp/autopilot.json`:
+Configuration lives in `~/.config/remarkable-mcp/autopilot.json`. Without an
+`agent_command` there is nothing to do, and the daemon exits right away:
 
 ```json
 {
   "agent_command": ["claude", "-p", "{prompt}", "--allowedTools", "mcp__remarkable"],
+  "prompt": "optional; default: the tablet_check_in prompt",
   "debounce_seconds": 60,
   "min_agent_interval_seconds": 300,
-  "trmnl_slot": 5,
-  "trmnl_min_interval_seconds": 900
+  "agent_timeout_seconds": 900
 }
 ```
 
-Use `remarkable-autopilot --once` for a single dry-run check, `--dry-run` to
-run without pushing anything or starting agents. Agent output is appended to
+The agent acts with your permissions while you're away, so switch it on
+deliberately. Use `remarkable-autopilot --once` for a single dry-run check,
+`--dry-run` to run without starting agents. Agent output is appended to
 `~/.local/state/remarkable-mcp/autopilot.log`. A systemd user unit is in
 `contrib/remarkable-autopilot.service`.
 
@@ -442,7 +441,6 @@ forms/<form>.json            field geometry, last answers
 inbox/<name>.json            entries (fingerprints, status, text, replies)
 reading/<item>.json          article text, block manifest, quotes
 ink-digest/last.json         page hashes already reported by the ink digest
-autopilot/trmnl.json         what the autopilot last put on the TRMNL display
 handwriting-cache/<hash>.json
 ```
 
