@@ -103,7 +103,7 @@ Branch protection is enabled on `main` - all changes must go through pull reques
 1. Add the tool function in `remarkable_mcp/tools.py` with proper docstring and annotations
 2. Create unique `ToolAnnotations` with a descriptive title
 3. Add tests in `test_server.py`
-4. Update the tools table in README.md
+4. Update the tools tables in README.md (overview) and docs/core.md or docs/workflows.md
 5. Update `docs/tools.md` with detailed documentation
 6. Run tests: `uv run pytest -v`
 

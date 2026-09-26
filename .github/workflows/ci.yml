@@ -70,7 +70,7 @@ jobs:
         run: uv build
 
       - name: Install built wheel
-        run: uv run --isolated --no-project --with dist/*.whl remarkable-mcp --help
+        run: uv run --isolated --no-project --with dist/*.whl marginalia --help
   nixos-module:
     runs-on: ubuntu-latest
     steps:

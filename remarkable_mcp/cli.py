@@ -224,7 +224,11 @@ Streamable HTTP Security:
                         "servers": {
                             "remarkable": {
                                 "command": "uvx",
-                                "args": ["remarkable-mcp"],
+                                "args": [
+                                    "--from",
+                                    "marginalia[web] @ git+https://github.com/comino/marginalia",
+                                    "marginalia",
+                                ],
                             }
                         }
                     },

@@ -1,14 +1,15 @@
 [project]
-name = "remarkable-mcp"
-version = "0.1.0"
-description = "MCP server for accessing reMarkable tablet data"
+name = "marginalia"
+version = "1.0.0"
+description = "Your reMarkable as an AI agent front end: pen marks in, structured results out (MCP server)"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 authors = [
-    { name = "Sam Morrow" }
+    { name = "Sven Eliasson" },
+    { name = "Sam Morrow", email = "sammorrowdrums@users.noreply.github.com" },
 ]
-keywords = ["mcp", "remarkable", "tablet", "notes", "sync"]
+keywords = ["mcp", "remarkable", "tablet", "handwriting", "pen", "review", "agents", "e-ink"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -46,7 +47,15 @@ web = [
     "trafilatura>=2.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/comino/marginalia"
+Documentation = "https://github.com/comino/marginalia/blob/main/docs/workflows.md"
+Issues = "https://github.com/comino/marginalia/issues"
+
 [project.scripts]
+marginalia = "remarkable_mcp.cli:main"
+marginalia-autopilot = "remarkable_mcp.workflows.autopilot:main"
+# Original names, kept so existing configs and service files keep working.
 remarkable-mcp = "remarkable_mcp.cli:main"
 remarkable-autopilot = "remarkable_mcp.workflows.autopilot:main"
 

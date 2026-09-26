@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" role="img" aria-labelledby="title desc">
+  <title id="title">Marginalia</title>
+  <desc id="desc">A printed page with a pen circle and a margin note, turning into a small graph of structured results.</desc>
+  <rect x="0" y="0" width="240" height="160" rx="18" fill="#ffffff"/>
+  <!-- page -->
+  <rect x="10" y="10" width="112" height="140" rx="9" fill="#fbfaf6" stroke="#1d1d1f" stroke-width="3"/>
+  <!-- printed lines -->
+  <g stroke="#9a9a9a" stroke-width="4" stroke-linecap="round">
+    <line x1="26" y1="36" x2="84" y2="36"/>
+    <line x1="26" y1="52" x2="78" y2="52"/>
+    <line x1="26" y1="68" x2="86" y2="68"/>
+    <line x1="26" y1="84" x2="70" y2="84"/>
+    <line x1="26" y1="100" x2="82" y2="100"/>
+    <line x1="26" y1="116" x2="64" y2="116"/>
+    <line x1="26" y1="132" x2="76" y2="132"/>
+  </g>
+  <!-- margin rule -->
+  <line x1="96" y1="22" x2="96" y2="140" stroke="#d6d2c4" stroke-width="2"/>
+  <!-- pen: circle around a line, strike, margin note -->
+  <path d="M20 62 C 22 54, 54 52, 84 60 C 98 64, 92 76, 70 77 C 44 78, 18 76, 22 64" fill="none" stroke="#c2410c" stroke-width="3" stroke-linecap="round"/>
+  <path d="M24 101 C 40 99, 62 102, 84 99" fill="none" stroke="#c2410c" stroke-width="3" stroke-linecap="round"/>
+  <path d="M101 60 q3 -6 6 0 t6 0 t6 0" fill="none" stroke="#c2410c" stroke-width="2.6" stroke-linecap="round"/>
+  <!-- flow arrow -->
+  <path d="M132 80 H 156" stroke="#1d1d1f" stroke-width="3" stroke-linecap="round"/>
+  <path d="M150 73 L 158 80 L 150 87" fill="none" stroke="#1d1d1f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- structure: nodes and edges -->
+  <g stroke="#1d1d1f" stroke-width="3" fill="#fbfaf6">
+    <line x1="190" y1="44" x2="190" y2="80"/>
+    <line x1="190" y1="80" x2="172" y2="116"/>
+    <line x1="190" y1="80" x2="210" y2="116"/>
+    <rect x="174" y="30" width="32" height="22" rx="5"/>
+    <circle cx="190" cy="80" r="11"/>
+    <rect x="158" y="112" width="28" height="20" rx="5"/>
+    <path d="M210 104 L 224 118 L 210 132 L 196 118 Z"/>
+  </g>
+  <circle cx="190" cy="80" r="4" fill="#c2410c"/>
+</svg>

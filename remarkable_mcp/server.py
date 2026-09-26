@@ -340,9 +340,12 @@ async def lifespan(app: MCPServer) -> AsyncIterator[None]:
 
 
 try:
-    _SERVER_VERSION = version("remarkable-mcp")
+    _SERVER_VERSION = version("marginalia")
 except PackageNotFoundError:
-    _SERVER_VERSION = ""
+    try:
+        _SERVER_VERSION = version("remarkable-mcp")  # installed under the original name
+    except PackageNotFoundError:
+        _SERVER_VERSION = ""
 
 # One MCPServer serves modern 2026-07-28 requests and legacy initialize/session
 # clients concurrently. reMarkable credentials and transport selection remain

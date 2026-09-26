@@ -1,15 +1,17 @@
 ---
 name: remarkable
 description: >
-  Access reMarkable tablet documents, notebooks, PDFs, and EPUBs.
-  Use when the user wants to read, search, browse, or extract text
-  from their reMarkable tablet. Supports handwriting OCR, typed text,
-  annotations, highlights, and page rendering to PNG/SVG.
-  Triggers: "reMarkable", "tablet notes", "handwritten notes",
-  "remarkable read", "remarkable search", "remarkable browse".
+  Marginalia - the reMarkable tablet as an agent front end. Read, search and
+  render documents, and turn pen marks into structured results: pen review of
+  drafts (change requests with source lines), code and LaTeX review, forms and
+  yes/no questions answered with ticks, an Agent Inbox of handwritten
+  requests, sketch -> Mermaid diagrams, tables, wireframes, math, reading
+  highlights, near-live ink. Triggers: "reMarkable", "tablet", "handwritten",
+  "send to my tablet", "review on paper", "ask me on the tablet",
+  "what did I write", "sketch", "inbox".
 ---
 
-# reMarkable Tablet
+# Marginalia: reMarkable for agents
 
 Access your reMarkable tablet as a second brain. Browse, search, read,
 and extract content from all documents including handwritten notes via OCR.

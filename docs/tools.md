@@ -1,7 +1,7 @@
 # MCP Tools Reference
 
 This document describes the read and render tools. Write tools are listed in the
-[README](../README.md#write-tools-by-transport).
+[core tools reference](core.md#write-tools-by-transport).
 
 ## Overview
 
