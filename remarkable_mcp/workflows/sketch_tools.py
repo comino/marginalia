@@ -99,12 +99,12 @@ async def remarkable_sketch(
 
     try:
         pg, d, label_crops = await asyncio.to_thread(work)
+    except IndexError as exc:  # before LookupError: IndexError is a subclass
+        return make_error("page_out_of_range", str(exc), "Pick an existing page.")
     except LookupError:
         return make_error(
             "document_not_found", f"Document not found: '{document}'", "Use remarkable_browse()."
         )
-    except IndexError as exc:
-        return make_error("page_out_of_range", str(exc), "Pick an existing page.")
     except Exception as exc:
         return make_error("sketch_failed", str(exc), "Check remarkable_status().")
 
@@ -183,12 +183,12 @@ async def remarkable_regions(
 
     try:
         pg, regions, crops, texts = await asyncio.to_thread(work)
+    except IndexError as exc:  # before LookupError: IndexError is a subclass
+        return make_error("page_out_of_range", str(exc), "Pick an existing page.")
     except LookupError:
         return make_error(
             "document_not_found", f"Document not found: '{document}'", "Use remarkable_browse()."
         )
-    except IndexError as exc:
-        return make_error("page_out_of_range", str(exc), "Pick an existing page.")
     except Exception as exc:
         return make_error("regions_failed", str(exc), "Check remarkable_status().")
 

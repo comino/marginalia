@@ -488,8 +488,12 @@ async def remarkable_form_list(include_done: bool = True) -> str:
     <usecase>List forms and questions sent to the tablet and whether they changed.</usecase>
     <instructions>
     status: "annotated" (ink added since sent / last read), "done" (moved to a
-    folder named Done / Answered), "waiting", or "missing".
+    folder named Done / Answered), "collected" (in such a folder and already
+    read), "waiting", or "missing".
     </instructions>
+    <parameters>
+    - include_done: Also list forms already moved to a done folder (default true).
+    </parameters>
     """
     records = list(_forms().all())
 
@@ -501,7 +505,7 @@ async def remarkable_form_list(include_done: bool = True) -> str:
         for r in records:
             baseline = (r.get("last_read") or {}).get("ink") or r.get("ink_at_send")
             status, location = cloud.doc_status(by_id.get(r["doc_id"]), baseline, by_id)
-            if status == "done" and not include_done:
+            if status in ("done", "collected") and not include_done:
                 continue
             rows.append(
                 {
