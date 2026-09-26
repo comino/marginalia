@@ -5,6 +5,16 @@ OpenWebUI, and other compatible tools.
 
 <!-- mcp-name: io.github.SamMorrowDrums/remarkable -->
 
+> **This fork adds a workflow layer** ([docs/workflows.md](docs/workflows.md)) that
+> interprets pen strokes instead of only exposing them, so even small agents can
+> use the tablet as a front end:
+> pen review of Markdown drafts with change requests mapped to source lines ·
+> forms and yes/no questions read from ticks · an Agent Inbox for handwritten
+> requests · sketch → diagram (Mermaid/SVG) · a reading queue that returns
+> highlights as deep-linked quotes · `remarkable_whats_new` to check it all in one
+> call. Handwriting is transcribed via MyScript (stroke-based), Google Vision or
+> Claude. Install with `uvx --from "remarkable-mcp[web] @ git+https://github.com/comino/remarkable-mcp@main" remarkable-mcp`.
+
 ## Features
 
 - Browse folders and recent documents.
