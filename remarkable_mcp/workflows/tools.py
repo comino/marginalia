@@ -8,18 +8,17 @@ loop with three calls: send -> collect -> send (next version).
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import os
 from pathlib import Path
 from typing import List, Optional
 
-from mcp.types import ImageContent, TextContent, ToolAnnotations
+from mcp.types import ToolAnnotations
 
-from remarkable_mcp.api import get_item_path, get_items_by_id, get_rmapi
+from remarkable_mcp.api import get_items_by_id
 from remarkable_mcp.responses import make_error, make_response
 from remarkable_mcp.server import mcp
-from remarkable_mcp.workflows import handwriting
+from remarkable_mcp.workflows import cloud, handwriting
 from remarkable_mcp.workflows.ink import load_document_ink_from_zip
 from remarkable_mcp.workflows.review import collect_requests, source_digest
 from remarkable_mcp.workflows.review_pdf import render_review_pdf
@@ -28,8 +27,6 @@ from remarkable_mcp.workflows.state import Store, now_iso, slugify
 logger = logging.getLogger(__name__)
 
 DEFAULT_REVIEW_FOLDER = os.environ.get("REMARKABLE_REVIEW_FOLDER", "/Review")
-# A review counts as "done" once its document sits in a folder with one of these names.
-_DONE_FOLDER_NAMES = {"reviewed", "done", "erledigt"}
 
 _READ = ToolAnnotations(
     title="Analyse reMarkable Annotations",
@@ -63,54 +60,6 @@ _LIST = ToolAnnotations(
 
 def _reviews() -> Store:
     return Store("reviews")
-
-
-def _refresh(client) -> None:
-    from remarkable_mcp.write_tools import _invalidate_client_cache
-
-    try:
-        _invalidate_client_cache(client)
-    except Exception as exc:  # stale metadata is only an optimisation problem
-        logger.debug("Could not invalidate client cache: %s", exc)
-
-
-def _find_by_id(client, doc_id: str):
-    return next((d for d in client.get_meta_items() if d.ID == doc_id), None)
-
-
-def _is_cloud() -> bool:
-    from remarkable_mcp.write_tools import _is_cloud_mode
-
-    return _is_cloud_mode()
-
-
-def _ensure_folder(client, path: str) -> str:
-    """Resolve ``/A/B`` to a folder id, creating missing levels (cloud)."""
-    from remarkable_mcp.write_tools import _resolve_parent_id
-
-    parent_id = ""
-    walked = ""
-    for part in [p for p in path.strip("/").split("/") if p]:
-        walked += "/" + part
-        collection = client.get_meta_items()
-        found = _resolve_parent_id(walked, get_items_by_id(collection), collection)
-        if found is None:
-            found = client.create_folder(part, parent_id).id
-            _refresh(client)
-        parent_id = found
-    return parent_id
-
-
-def _download_zip(client, doc) -> bytes:
-    data = client.download(doc)
-    if not data:
-        raise RuntimeError("The transport returned an empty document payload.")
-    if data[:5] == b"%PDF-":
-        raise RuntimeError(
-            "This transport returns flattened PDFs without stroke data; "
-            "use cloud or SSH mode to analyse annotations."
-        )
-    return data
 
 
 def _note_payloads(requests, ink, include_images: bool):
@@ -147,16 +96,6 @@ def _shape(requests, notes) -> List[dict]:
         text, status = notes.get(req.mark.id, (None, "none"))
         out.append(req.to_dict(text, status))
     return out
-
-
-def _with_images(payload: str, images) -> list:
-    blocks: list = [TextContent(type="text", text=payload)]
-    for mark_id, what, png in images:
-        blocks.append(TextContent(type="text", text=f"{mark_id}: {what}"))
-        blocks.append(
-            ImageContent(type="image", data=base64.b64encode(png).decode(), mimeType="image/png")
-        )
-    return blocks
 
 
 def _counts(requests) -> dict:
@@ -290,7 +229,7 @@ async def remarkable_review_send(
     if record is None and store.get(slug) is not None:
         slug = f"{slug}-{source_digest(text)[:4]}"
 
-    if not _is_cloud():
+    if not cloud.is_cloud():
         return make_error(
             "unsupported_transport",
             "remarkable_review_send currently uploads through the cloud sync API only.",
@@ -300,11 +239,7 @@ async def remarkable_review_send(
     doc_name = f"{rendered.title} · v{version}"
 
     def upload():
-        client = get_rmapi()
-        parent_id = _ensure_folder(client, folder)
-        doc = client.upload_document(rendered.pdf, doc_name, "pdf", parent_id)
-        _refresh(client)
-        return doc
+        return cloud.upload_pdf(rendered.pdf, doc_name, folder)
 
     try:
         doc = await asyncio.to_thread(upload)
@@ -405,12 +340,12 @@ async def remarkable_review_collect(
         )
 
     def work():
-        client = get_rmapi()
-        _refresh(client)
-        doc = _find_by_id(client, entry["doc_id"])
+        client = cloud.client()
+        cloud.refresh(client)
+        doc = cloud.find_by_id(client, entry["doc_id"])
         if doc is None:
             raise LookupError(entry["doc_name"])
-        zip_bytes = _download_zip(client, doc)
+        zip_bytes = cloud.download_zip(client, doc)
         ink = load_document_ink_from_zip(zip_bytes)
         seen = set(record.get("seen", []))
         reqs = collect_requests(ink, entry["blocks"], entry.get("source_text"), seen)
@@ -469,7 +404,7 @@ async def remarkable_review_collect(
         },
         hint,
     )
-    return _with_images(payload, images) if images else payload
+    return cloud.with_images(payload, images) if images else payload
 
 
 async def remarkable_review_list() -> str:
@@ -492,8 +427,8 @@ async def remarkable_review_list() -> str:
         )
 
     def work():
-        client = get_rmapi()
-        _refresh(client)
+        client = cloud.client()
+        cloud.refresh(client)
         collection = client.get_meta_items()
         by_id = get_items_by_id(collection)
         rows = []
@@ -508,22 +443,10 @@ async def remarkable_review_list() -> str:
                 "source_path": r.get("source_path"),
                 "last_collect": (r.get("last_collect") or {}).get("at"),
             }
-            if doc is None:
-                row["status"] = "missing"
-            else:
-                path = get_item_path(doc, by_id)
-                row["location"] = path
-                folder = path.rsplit("/", 2)[-2].lower() if path.count("/") >= 2 else ""
-                baseline = (r.get("last_collect") or {}).get("doc_hash") or latest.get(
-                    "doc_hash_at_send"
-                )
-                current = getattr(doc, "hash", None)
-                if folder in _DONE_FOLDER_NAMES:
-                    row["status"] = "done"
-                elif current and baseline and current != baseline:
-                    row["status"] = "annotated"
-                else:
-                    row["status"] = "waiting"
+            baseline = (r.get("last_collect") or {}).get("doc_hash") or latest.get(
+                "doc_hash_at_send"
+            )
+            row["status"], row["location"] = cloud.doc_status(doc, baseline, by_id)
             rows.append(row)
         return rows
 
@@ -568,12 +491,12 @@ async def remarkable_annotations(
     from remarkable_mcp.tools import _find_target_document
 
     def work():
-        client = get_rmapi()
+        client = cloud.client()
         collection = client.get_meta_items()
         doc = _find_target_document(collection, get_items_by_id(collection), document)
         if doc is None:
             raise LookupError(document)
-        ink = load_document_ink_from_zip(_download_zip(client, doc), pages)
+        ink = load_document_ink_from_zip(cloud.download_zip(client, doc), pages)
         reqs = collect_requests(ink)
         notes, images = _note_payloads(reqs, ink, include_images)
         return doc, ink, reqs, notes, images
@@ -607,7 +530,7 @@ async def remarkable_annotations(
             else ""
         ),
     )
-    return _with_images(payload, images) if images else payload
+    return cloud.with_images(payload, images) if images else payload
 
 
 def register_workflow_tools(write_enabled: bool) -> None:
@@ -617,6 +540,10 @@ def register_workflow_tools(write_enabled: bool) -> None:
     mcp.tool(annotations=_COLLECT)(remarkable_review_collect)
     if write_enabled:
         mcp.tool(annotations=_SEND)(remarkable_review_send)
+
+    from remarkable_mcp.workflows import form_tools
+
+    form_tools.register(mcp, write_enabled)
 
 
 def _register_on_import() -> None:

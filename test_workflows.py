@@ -495,16 +495,26 @@ class FakeCloud:
         return _doc_zip(self.zips[doc.id], self.ink.get(doc.id, {}), doc_id=doc.id)
 
 
+def _fake_path(item, by_id):
+    parts = [item.VissibleName]
+    parent = by_id.get(item.Parent)
+    while parent is not None:
+        parts.append(parent.VissibleName)
+        parent = by_id.get(parent.Parent)
+    return "/" + "/".join(reversed(parts))
+
+
 @pytest.fixture
 def cloud(monkeypatch, tmp_path):
-    from remarkable_mcp.workflows import tools
+    from remarkable_mcp.workflows import cloud as cloud_mod
 
     fake = FakeCloud()
     monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path / "state"))
     monkeypatch.setenv("REMARKABLE_HANDWRITING_BACKEND", "none")
-    monkeypatch.setattr(tools, "get_rmapi", lambda: fake)
-    monkeypatch.setattr(tools, "_is_cloud", lambda: True)
-    monkeypatch.setattr(tools, "_refresh", lambda client: None)
+    monkeypatch.setattr(cloud_mod, "client", lambda: fake)
+    monkeypatch.setattr(cloud_mod, "is_cloud", lambda: True)
+    monkeypatch.setattr(cloud_mod, "refresh", lambda c: None)
+    monkeypatch.setattr(cloud_mod, "get_item_path", _fake_path)
     return fake
 
 

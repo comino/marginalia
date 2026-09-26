@@ -1,0 +1,462 @@
+"""Paper forms: render fields with known geometry, read answers from ink.
+
+Every answer area is a rectangle recorded in the form manifest, so reading a
+form needs no recognition for choices: an option counts as selected when there
+is enough ink inside its box (a tick or cross) or a loop around it (a circle).
+Only write-in fields go through handwriting transcription.
+
+Field types::
+
+    checkbox  {"id", "type": "checkbox", "label"}                    -> bool
+    choice    {"id", "type": "choice", "label", "options": [...]}    -> str | None
+    multi     {"id", "type": "multi", "label", "options": [...]}     -> [str]
+    scale     {"id", "type": "scale", "label", "min": 1, "max": 5,
+               "min_label"?, "max_label"?}                           -> int | None
+    text      {"id", "type": "text", "label", "lines": 2}            -> handwriting
+    heading   {"type": "heading", "label"}                           (layout only)
+    info      {"type": "info", "label"}                              (layout only)
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import pymupdf
+
+from remarkable_mcp.workflows.ink import PageInk, Rect, Stroke
+from remarkable_mcp.workflows.marks import stroke_features
+from remarkable_mcp.workflows.review_pdf import PAGE_H, PAGE_W
+
+FIELD_TYPES = {"checkbox", "choice", "multi", "scale", "text", "heading", "info"}
+_ANSWER_TYPES = FIELD_TYPES - {"heading", "info"}
+
+MARGIN_X = 40.0
+TOP = 44.0
+BOTTOM = PAGE_H - 36.0
+BOX = 11.0
+LINE_GAP = 26.0  # ruled line spacing for write-in fields
+_BLACK = (0, 0, 0)
+_GREY = (0.45, 0.45, 0.45)
+_RULE = (0.7, 0.7, 0.7)
+
+
+class FormSpecError(ValueError):
+    pass
+
+
+@dataclass
+class AnswerArea:
+    field_id: str
+    option: Optional[str]  # option label; None for checkbox/text
+    page: int  # 1-based
+    rect: Rect
+
+
+@dataclass
+class FormRender:
+    pdf: bytes
+    areas: List[AnswerArea]
+    page_count: int
+    fields: List[dict]
+
+    def manifest(self) -> dict:
+        return {
+            "fields": self.fields,
+            "areas": [
+                {"field": a.field_id, "option": a.option, "page": a.page, "rect": list(a.rect)}
+                for a in self.areas
+            ],
+        }
+
+
+def validate_fields(fields: Sequence[dict]) -> List[dict]:
+    """Normalise and check a field list; raises FormSpecError with a clear message."""
+    if not fields:
+        raise FormSpecError("A form needs at least one field.")
+    out: List[dict] = []
+    seen = set()
+    for n, raw in enumerate(fields, start=1):
+        if not isinstance(raw, dict):
+            raise FormSpecError(f"Field {n} must be an object.")
+        f = dict(raw)
+        ftype = f.get("type", "checkbox")
+        if ftype not in FIELD_TYPES:
+            raise FormSpecError(
+                f"Field {n}: unknown type '{ftype}'. Use one of {sorted(FIELD_TYPES)}."
+            )
+        f["type"] = ftype
+        if not str(f.get("label", "")).strip():
+            raise FormSpecError(f"Field {n}: 'label' is required.")
+        if ftype in _ANSWER_TYPES:
+            fid = str(f.get("id") or f"q{n}")
+            if fid in seen:
+                raise FormSpecError(f"Duplicate field id '{fid}'.")
+            seen.add(fid)
+            f["id"] = fid
+        if ftype in ("choice", "multi"):
+            opts = [str(o) for o in f.get("options") or []]
+            if len(opts) < 2:
+                raise FormSpecError(f"Field '{f.get('id')}': choice fields need 2+ options.")
+            f["options"] = opts
+        if ftype == "scale":
+            lo, hi = int(f.get("min", 1)), int(f.get("max", 5))
+            if not 0 <= lo < hi or hi - lo > 10:
+                raise FormSpecError(
+                    f"Field '{f['id']}': scale needs 0 <= min < max, at most 11 steps."
+                )
+            f["min"], f["max"] = lo, hi
+        if ftype == "text":
+            f["lines"] = max(1, min(12, int(f.get("lines", 2))))
+        out.append(f)
+    if not any(f["type"] in _ANSWER_TYPES for f in out):
+        raise FormSpecError("A form needs at least one answerable field.")
+    return out
+
+
+class _Layout:
+    """Top-down flow layout with page breaks."""
+
+    def __init__(self, doc, title: str, subtitle: str):
+        self.doc = doc
+        self.title = title
+        self.subtitle = subtitle
+        self.page = None
+        self.y = 0.0
+        self.width = PAGE_W - 2 * MARGIN_X
+        self.new_page()
+
+    @property
+    def page_no(self) -> int:
+        return len(self.doc)
+
+    def new_page(self) -> None:
+        self.page = self.doc.new_page(width=PAGE_W, height=PAGE_H)
+        header = self.title + (f" · {self.subtitle}" if self.subtitle else "")
+        self.page.insert_text(
+            (MARGIN_X, 24), header[:100], fontsize=6.5, fontname="helv", color=_GREY
+        )
+        self.y = TOP
+
+    def ensure(self, height: float) -> None:
+        if self.y + height > BOTTOM:
+            self.new_page()
+
+    def text(
+        self, text: str, size: float, bold: bool = False, color=_BLACK, indent: float = 0.0
+    ) -> float:
+        """Write wrapped text at the cursor; returns its height."""
+        font = "hebo" if bold else "helv"
+        width = self.width - indent
+        lines = _wrap(text, size, width, font)
+        height = len(lines) * size * 1.35
+        self.ensure(height)
+        for i, line in enumerate(lines):
+            self.page.insert_text(
+                (MARGIN_X + indent, self.y + size + i * size * 1.35),
+                line,
+                fontsize=size,
+                fontname=font,
+                color=color,
+            )
+        self.y += height
+        return height
+
+
+def _wrap(text: str, size: float, width: float, font: str) -> List[str]:
+    lines: List[str] = []
+    for para in str(text).split("\n"):
+        words, cur = para.split(), ""
+        for w in words:
+            trial = f"{cur} {w}".strip()
+            if pymupdf.get_text_length(trial, fontname=font, fontsize=size) <= width or not cur:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = w
+        lines.append(cur)
+    return lines or [""]
+
+
+def _box(page, x: float, y: float, size: float = BOX) -> Rect:
+    rect = (x, y, x + size, y + size)
+    page.draw_rect(pymupdf.Rect(*rect), color=_BLACK, width=0.8)
+    return rect
+
+
+def render_form(
+    title: str,
+    fields: Sequence[dict],
+    intro: str = "",
+    subtitle: str = "",
+) -> FormRender:
+    fields = validate_fields(fields)
+    doc = pymupdf.open()
+    subtitle = subtitle or datetime.now().strftime("%d %b %Y")
+    lay = _Layout(doc, title, subtitle)
+    areas: List[AnswerArea] = []
+
+    lay.text(title, 16, bold=True)
+    lay.y += 4
+    if intro:
+        lay.text(intro, 9.5, color=(0.2, 0.2, 0.2))
+    lay.y += 10
+
+    number = 0
+    for f in fields:
+        t = f["type"]
+        if t == "heading":
+            lay.ensure(40)
+            lay.y += 8
+            lay.text(f["label"], 12, bold=True)
+            lay.y += 6
+            continue
+        if t == "info":
+            lay.text(f["label"], 9, color=(0.25, 0.25, 0.25))
+            lay.y += 8
+            continue
+        if t == "checkbox":
+            lay.ensure(BOX + 10)
+            areas.append(AnswerArea(f["id"], None, lay.page_no, _box(lay.page, MARGIN_X, lay.y)))
+            saved = lay.y
+            lay.y -= 1
+            h = lay.text(f"{f['label']}", 10.5, indent=BOX + 8)
+            lay.y = saved + max(h, BOX) + 12
+            continue
+
+        number += 1
+        lay.ensure(40)
+        lay.text(f"{number}. {f['label']}", 10.5, bold=True)
+        lay.y += 6
+        if t in ("choice", "multi"):
+            if t == "multi":
+                lay.text("Tick all that apply.", 7.5, color=_GREY, indent=8)
+                lay.y += 3
+            for opt in f["options"]:
+                lay.ensure(BOX + 8)
+                rect = _box(lay.page, MARGIN_X + 8, lay.y, BOX)
+                areas.append(AnswerArea(f["id"], opt, lay.page_no, rect))
+                saved = lay.y
+                lay.y -= 1
+                h = lay.text(opt, 10, indent=8 + BOX + 8)
+                lay.y = saved + max(h, BOX) + 9
+        elif t == "scale":
+            steps = list(range(f["min"], f["max"] + 1))
+            size = 20.0
+            gap = min(14.0, (lay.width - 16 - len(steps) * size) / max(1, len(steps) - 1))
+            lay.ensure(size + 24)
+            x = MARGIN_X + 8
+            for v in steps:
+                rect = (x, lay.y, x + size, lay.y + size)
+                lay.page.draw_rect(pymupdf.Rect(*rect), color=_BLACK, width=0.8)
+                label = str(v)
+                tw = pymupdf.get_text_length(label, fontname="helv", fontsize=10)
+                lay.page.insert_text(
+                    (x + (size - tw) / 2, lay.y + 14), label, fontsize=10, fontname="helv"
+                )
+                areas.append(AnswerArea(f["id"], label, lay.page_no, rect))
+                x += size + gap
+            lay.y += size + 3
+            ends = [f.get("min_label", ""), f.get("max_label", "")]
+            if any(ends):
+                lay.page.insert_text(
+                    (MARGIN_X + 8, lay.y + 8), ends[0], fontsize=7, fontname="helv", color=_GREY
+                )
+                tw = pymupdf.get_text_length(ends[1], fontname="helv", fontsize=7)
+                lay.page.insert_text(
+                    (x - gap - tw, lay.y + 8), ends[1], fontsize=7, fontname="helv", color=_GREY
+                )
+                lay.y += 10
+        elif t == "text":
+            height = f["lines"] * LINE_GAP
+            lay.ensure(height + 6)
+            top = lay.y
+            for i in range(1, f["lines"] + 1):
+                yy = top + i * LINE_GAP
+                lay.page.draw_line(
+                    (MARGIN_X + 8, yy), (PAGE_W - MARGIN_X, yy), color=_RULE, width=0.5
+                )
+            areas.append(
+                AnswerArea(
+                    f["id"],
+                    None,
+                    lay.page_no,
+                    (MARGIN_X + 4, top, PAGE_W - MARGIN_X, top + height + 6),
+                )
+            )
+            lay.y = top + height + 4
+        lay.y += 14
+
+    total = len(doc)
+    for i, page in enumerate(doc, start=1):
+        page.insert_text(
+            (PAGE_W - 40, PAGE_H - 14), f"{i}/{total}", fontsize=6.5, fontname="helv", color=_GREY
+        )
+    pdf = doc.tobytes(garbage=3, deflate=True)
+    doc.close()
+    return FormRender(pdf=pdf, areas=areas, page_count=total, fields=fields)
+
+
+# --------------------------------------------------------------------------- reading
+
+
+def _inside(p: Tuple[float, float], r: Rect) -> bool:
+    return r[0] <= p[0] <= r[2] and r[1] <= p[1] <= r[3]
+
+
+def ink_length_in(rect: Rect, strokes: Sequence[Stroke]) -> float:
+    """Length of pen path inside ``rect`` (segment midpoints tested)."""
+    total = 0.0
+    for s in strokes:
+        if s.is_highlighter:
+            continue
+        for a, b in zip(s.points, s.points[1:]):
+            if _inside(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), rect):
+                total += math.dist(a, b)
+    return total
+
+
+def _encloses(stroke: Stroke, rect: Rect) -> bool:
+    """A loop drawn around the box (circling an option)."""
+    from remarkable_mcp.workflows.marks import _point_in_polygon
+
+    f = stroke_features(stroke)
+    sx0, sy0, sx1, sy1 = stroke.bbox
+    w, h = rect[2] - rect[0], rect[3] - rect[1]
+    if f.inner > 0.15 or (sx1 - sx0) < w or (sy1 - sy0) < h * 0.8:
+        return False
+    if (sx1 - sx0) > 8 * max(w, h) or (sy1 - sy0) > 4 * max(w, h):
+        return False  # a huge loop is not about this box
+    if f.closure > 0.45 and f.length < 2.4 * max(sx1 - sx0, sy1 - sy0):
+        return False
+    return _point_in_polygon(((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2), stroke.points)
+
+
+@dataclass
+class AreaScore:
+    area: AnswerArea
+    ink: float  # path length inside the (slightly grown) box, in box sides
+    circled: bool
+
+    @property
+    def selected(self) -> bool:
+        return self.circled or self.ink >= 0.6
+
+    @property
+    def cancelled(self) -> bool:
+        """Box filled solid - the usual way to undo a tick."""
+        return self.ink >= 6.0
+
+
+def score_areas(areas: Sequence[AnswerArea], pages: Dict[int, PageInk]) -> List[AreaScore]:
+    scores = []
+    for a in areas:
+        page = pages.get(a.page)
+        strokes = page.strokes if page else []
+        side = max(a.rect[2] - a.rect[0], a.rect[3] - a.rect[1])
+        grown = (a.rect[0] - 2, a.rect[1] - 2, a.rect[2] + 2, a.rect[3] + 2)
+        ink = ink_length_in(grown, strokes) / (side or 1)
+        circled = any(_encloses(s, a.rect) for s in strokes)
+        scores.append(AreaScore(a, ink, circled))
+    return scores
+
+
+@dataclass
+class FieldAnswer:
+    field: dict
+    value: object = None
+    status: str = "empty"  # answered | empty | ambiguous | needs_transcription
+    detail: Dict[str, object] = field(default_factory=dict)
+    strokes: List[Stroke] = field(default_factory=list)  # write-in ink
+    rect: Optional[Rect] = None
+    page: Optional[int] = None
+
+
+def read_answers(manifest: dict, pages: Dict[int, PageInk]) -> List[FieldAnswer]:
+    """Resolve every field's value from the ink on ``pages`` (keyed by PDF page)."""
+    areas = [
+        AnswerArea(a["field"], a["option"], a["page"], tuple(a["rect"])) for a in manifest["areas"]
+    ]
+    by_field: Dict[str, List[AreaScore]] = {}
+    for s in score_areas(areas, pages):
+        by_field.setdefault(s.area.field_id, []).append(s)
+
+    answers: List[FieldAnswer] = []
+    for f in manifest["fields"]:
+        if f["type"] not in _ANSWER_TYPES:
+            continue
+        scores = by_field.get(f["id"], [])
+        ans = FieldAnswer(field=f)
+        if f["type"] == "checkbox":
+            s = scores[0]
+            ans.value = s.selected and not s.cancelled
+            ans.status = "answered" if s.ink > 0.2 or s.circled else "empty"
+            if s.cancelled:
+                ans.detail["note"] = "box filled solid - read as unticked"
+        elif f["type"] in ("choice", "multi", "scale"):
+            picked = [s for s in scores if s.selected and not s.cancelled]
+            values = [s.area.option for s in picked]
+            if f["type"] == "multi":
+                ans.value = values
+                ans.status = "answered" if values else "empty"
+            elif len(values) == 1:
+                ans.value = int(values[0]) if f["type"] == "scale" else values[0]
+                ans.status = "answered"
+            elif len(values) > 1:
+                # A circled option beats ticks; otherwise the most ink wins but is flagged.
+                circled = [s for s in picked if s.circled]
+                best = circled[0] if len(circled) == 1 else max(picked, key=lambda s: s.ink)
+                ans.value = int(best.area.option) if f["type"] == "scale" else best.area.option
+                ans.status = "ambiguous"
+                ans.detail["candidates"] = values
+            crossed = [s.area.option for s in scores if s.cancelled]
+            if crossed:
+                ans.detail["cancelled"] = crossed
+        elif f["type"] == "text":
+            s = scores[0]
+            page = pages.get(s.area.page)
+            if page:
+                ink = [
+                    st
+                    for st in page.strokes
+                    if not st.is_highlighter and _mostly_inside(st, s.area.rect)
+                ]
+                if ink:
+                    ans.strokes = ink
+                    ans.rect = _union_rect([st.bbox for st in ink])
+                    ans.page = s.area.page
+                    ans.status = "needs_transcription"
+        answers.append(ans)
+    return answers
+
+
+def _mostly_inside(stroke: Stroke, rect: Rect) -> bool:
+    inside = sum(1 for p in stroke.points if _inside(p, rect))
+    return inside >= 0.6 * len(stroke.points)
+
+
+def _union_rect(rects: Sequence[Rect]) -> Rect:
+    return (
+        min(r[0] for r in rects),
+        min(r[1] for r in rects),
+        max(r[2] for r in rects),
+        max(r[3] for r in rects),
+    )
+
+
+def stray_strokes(manifest: dict, pages: Dict[int, PageInk]) -> Dict[int, List[Stroke]]:
+    """Ink outside every answer area (margin remarks), per page."""
+    grown: Dict[int, List[Rect]] = {}
+    for a in manifest["areas"]:
+        r = a["rect"]
+        pad = 14 if a["option"] is not None else 4
+        grown.setdefault(a["page"], []).append((r[0] - pad, r[1] - pad, r[2] + pad, r[3] + pad))
+    out: Dict[int, List[Stroke]] = {}
+    for pno, page in pages.items():
+        rects = grown.get(pno, [])
+        extra = [s for s in page.strokes if not any(_mostly_inside(s, r) for r in rects)]
+        if extra:
+            out[pno] = extra
+    return out
