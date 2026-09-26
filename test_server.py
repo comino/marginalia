@@ -139,7 +139,7 @@ class TestMCPServerInitialization:
         ``remarkable_author`` is SSH-only and therefore hidden in cloud mode, so
         the default cloud surface is 31 tools.
         """
-        tools = await _list_tools()
+        tools = [t for t in await _list_tools() if not t.name.startswith("trmnl_")]
         assert len(tools) == 31, f"Expected 31 tools, got {len(tools)}"
 
     @pytest.mark.asyncio
@@ -1585,7 +1585,7 @@ class TestE2E:
     @pytest.mark.asyncio
     async def test_server_lists_all_tools(self):
         """Test that server can list all tools (e2e)."""
-        tools = await _list_tools()
+        tools = [t for t in await _list_tools() if not t.name.startswith("trmnl_")]
 
         assert len(tools) == 31
 

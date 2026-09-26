@@ -270,6 +270,18 @@ For better handwriting recognition, configure GOOGLE_VISION_API_KEY and use
 REMARKABLE_OCR_BACKEND=auto (the default) or google.
 """
 
+    instructions += """
+## Workflow tools
+
+remarkable_whats_new() lists everything that needs attention (reviews, forms,
+inbox, reading highlights) with the next tool call for each. See the
+tablet_check_in prompt.
+"""
+    from remarkable_mcp.trmnl import tools as trmnl_tools
+
+    if trmnl_tools.configured():
+        instructions += "\n" + trmnl_tools.INSTRUCTIONS
+
     return instructions
 
 
@@ -363,6 +375,12 @@ if _write_tools.write_enabled():
 # Workflow tools (review round-trips, ink analysis). Sending needs write mode.
 # The module registers its tools on import (see _register_on_import), which
 # keeps import order irrelevant for the tools <-> server cycle.
+# TRMNL e-ink display tools, when a display is configured on this machine.
+from remarkable_mcp.trmnl import tools as _trmnl_tools  # noqa: E402
+
+if _trmnl_tools.configured():
+    _trmnl_tools.register(mcp)
+
 # Register the interactive MCP App canvas (remarkable_canvas + ui:// resource).
 # There is no feature flag: app-capable clients (those advertising the MCP Apps
 # UI extension at initialize) open an interactive viewer, while other clients
