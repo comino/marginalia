@@ -24,7 +24,7 @@ import math
 import re
 import statistics
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from remarkable_mcp.workflows.ink import PageInk, Rect, Stroke, Word
 
@@ -774,8 +774,24 @@ def _join_arcs(
     return out, [s for s in ink if id(s) not in used]
 
 
+def _unique_words(parts: Sequence[Mark]) -> List[Word]:
+    """The parts' words in order, each once (a hashed key: comparing
+    dataclasses with ``==`` in a list is quadratic and slow on dense pages)."""
+    seen: Set[Tuple[str, Tuple[float, ...]]] = set()
+    words: List[Word] = []
+    for p in parts:
+        for w in p.words:
+            key = (w.text, tuple(w.rect))
+            if key not in seen:
+                seen.add(key)
+                words.append(w)
+    return words
+
+
 def _merge_marks(marks: List[Mark], word_h: float, all_words: Sequence[Word] = ()) -> List[Mark]:
     out: List[Mark] = []
+    line_of: Optional[Dict[int, int]] = None  # computed once, when a join needs it
+    in_order: List[Word] = []
     for kind in dict.fromkeys(m.kind for m in marks):
         same = [m for m in marks if m.kind == kind]
         if kind in ("strikethrough", "underline", "highlight"):
@@ -790,20 +806,20 @@ def _merge_marks(marks: List[Mark], word_h: float, all_words: Sequence[Word] = (
 
             for g in _cluster_by(len(same), same_line):
                 parts = sorted((same[i] for i in g), key=lambda m: m.rect[0])
-                words: List[Word] = []
-                for p in parts:
-                    words += [w for w in p.words if w not in words]
+                words = _unique_words(parts)
                 if len(parts) > 1 and words and all_words:
                     # Re-derive the words over the joined span: a word the
                     # pulls met in the middle of belongs to neither half alone.
-                    line_of = visual_lines(all_words)
+                    if line_of is None:
+                        line_of = visual_lines(all_words)
+                        in_order = _reading_order(all_words)
                     lines = {line_of[id(w)] for w in words}
                     x0 = min(p.rect[0] for p in parts)
                     x1 = max(p.rect[2] for p in parts)
                     trim = min(0.06 * (x1 - x0), 0.45 * word_h)
                     words = [
                         w
-                        for w in _reading_order(all_words)
+                        for w in in_order
                         if line_of[id(w)] in lines
                         and _overlap_1d(w.rect[0], w.rect[2], x0 + trim, x1 - trim)
                         >= 0.5 * ((w.rect[2] - w.rect[0]) or 1e-6)
@@ -838,9 +854,7 @@ def _merge_marks(marks: List[Mark], word_h: float, all_words: Sequence[Word] = (
                 groups = _cluster(rects, dx, dy)
             for g in groups:
                 parts = [same[i] for i in g]
-                words: List[Word] = []
-                for p in parts:
-                    words += [w for w in p.words if w not in words]
+                words = _unique_words(parts)
                 out.append(
                     Mark(
                         kind=kind,
