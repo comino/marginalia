@@ -17,7 +17,7 @@ Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Pinned to a release so a push to main never changes a running daemon.
 # To upgrade: change the tag, then daemon-reload + restart.
-ExecStart=%h/.local/bin/uvx --from "git+https://github.com/comino/marginalia@marginalia-1.1.1" remarkable-autopilot
+ExecStart=%h/.local/bin/uvx --from "git+https://github.com/comino/marginalia@marginalia-1.1.2" remarkable-autopilot
 Restart=on-failure
 RestartSec=30
 # uvx exits 143 if it is killed before the autopilot has shut down cleanly

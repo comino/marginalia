@@ -312,7 +312,8 @@ class Watcher:
                 logger.debug("notification socket closed: %s", exc)
             finally:
                 try:
-                    await ws.close()
+                    # bounded: a stuck close handshake must not hold up a shutdown
+                    await asyncio.wait_for(ws.close(), timeout=2)
                 except Exception:
                     pass
             if time.time() - opened < HEALTHY_CONNECTION_SECONDS:

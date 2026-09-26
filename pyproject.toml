@@ -1,6 +1,6 @@
 [project]
 name = "marginalia"
-version = "1.1.1"
+version = "1.1.2"
 description = "Your reMarkable as an AI agent front end: pen marks in, structured results out (MCP server)"
 readme = "README.md"
 license = { text = "MIT" }

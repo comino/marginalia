@@ -257,6 +257,7 @@ class Autopilot:
                 await self.check()
         finally:
             task.cancel()
+            await asyncio.wait({task}, timeout=5)  # let the socket close
 
 
 def _run_agent(argv: List[str], log, timeout: float) -> int:
@@ -318,14 +319,19 @@ def main(argv: Optional[List[str]] = None) -> None:
             )
         )
         return
-
-    def _stop(signum, frame):  # systemd stops the service with SIGTERM
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, _stop)
     try:
-        asyncio.run(pilot.run())
+        asyncio.run(_serve(pilot))
     except KeyboardInterrupt:
+        logger.info("autopilot stopped")
+
+
+async def _serve(pilot: "Autopilot") -> None:
+    """Run until SIGTERM (how systemd stops the service), then shut down cleanly."""
+    main_task = asyncio.current_task()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, main_task.cancel)
+    try:
+        await pilot.run()
+    except asyncio.CancelledError:
         logger.info("autopilot stopped")
 
 

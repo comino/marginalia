@@ -207,13 +207,24 @@ def test_sigterm_stops_the_daemon_cleanly(tmp_path):
     import subprocess
     import time
 
+    # The real run loop, with a watcher whose shutdown needs an await (like
+    # closing the notification socket) and a check that needs no network.
     script = (
-        "import asyncio, sys\n"
-        "from remarkable_mcp.workflows import autopilot as a\n"
-        "async def idle(self):\n"
+        "import asyncio\n"
+        "from remarkable_mcp.workflows import autopilot as a, live\n"
+        "class FakeWatcher:\n"
+        "    def __init__(self, **kw): self.q = asyncio.Queue()\n"
+        "    def subscribe(self): return self.q\n"
+        "    async def run(self):\n"
+        "        try:\n"
+        "            await asyncio.sleep(3600)\n"
+        "        finally:\n"
+        "            await asyncio.sleep(0.2)\n"
+        "            print('watcher closed', flush=True)\n"
+        "live.Watcher = FakeWatcher\n"
+        "async def check(self):\n"
         "    print('ready', flush=True)\n"
-        "    await asyncio.sleep(3600)\n"
-        "a.Autopilot.run = idle\n"
+        "a.Autopilot.check = check\n"
         "a.main([])\n"
     )
     env = dict(os.environ, REMARKABLE_AUTOPILOT_CONFIG=str(tmp_path / "none.json"))
@@ -228,9 +239,10 @@ def test_sigterm_stops_the_daemon_cleanly(tmp_path):
         assert proc.stdout.readline().strip() == "ready"
         time.sleep(0.2)
         proc.send_signal(signal.SIGTERM)
-        _, err = proc.communicate(timeout=20)
+        out, err = proc.communicate(timeout=20)
     finally:
         proc.kill()
     assert proc.returncode == 0, err
     assert "autopilot stopped" in err
-    assert "Traceback" not in err
+    assert "Traceback" not in err and "destroyed but it is pending" not in err
+    assert "watcher closed" in out
