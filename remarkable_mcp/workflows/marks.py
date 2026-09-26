@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import statistics
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -172,7 +173,10 @@ class _Features:
     x_reversals: int
     y_reversals: int
     density: float  # path length / bbox diagonal
-    inner: float  # share of points in the central half of the bbox (fill vs. outline)
+    inner: float  # share of path length in the central half of the bbox (fill vs. outline)
+    smooth_straightness: float  # straightness after removing tremor / waves (< ~2 pt)
+    swept: float  # angle (radians) the stroke sweeps around its box centre
+    sagitta: float  # how far the path bows away from the chord between its ends
 
 
 def _reversals(values: Sequence[float], jitter: float = 0.3) -> int:
@@ -204,6 +208,8 @@ def stroke_features(s: Stroke) -> _Features:
         if cx0 <= mx <= cx1 and cy0 <= my <= cy1:
             inside += math.hypot(bx - ax, by - ay)
     inner = inside / length if len(s.points) > 1 else 0.0
+    simple = simplify(s.points, 2.2)
+    simple_len = sum(math.dist(a, b) for a, b in zip(simple, simple[1:])) or 1e-6
     return _Features(
         w=w,
         h=h,
@@ -214,7 +220,62 @@ def stroke_features(s: Stroke) -> _Features:
         y_reversals=_reversals([p[1] for p in s.points]),
         density=length / diag,
         inner=inner,
+        smooth_straightness=end / simple_len,
+        swept=_swept_angle(s.points, ((x0 + x1) / 2, (y0 + y1) / 2)),
+        sagitta=_sagitta(s.points),
     )
+
+
+def _sagitta(points: Sequence[Tuple[float, float]]) -> float:
+    (ax, ay), (bx, by) = points[0], points[-1]
+    norm = math.hypot(bx - ax, by - ay)
+    if norm == 0:
+        return 0.0
+    return max(abs((by - ay) * px - (bx - ax) * py + bx * ay - by * ax) / norm for px, py in points)
+
+
+def simplify(points: Sequence[Tuple[float, float]], epsilon: float) -> List[Tuple[float, float]]:
+    """Ramer-Douglas-Peucker (iterative): drops wiggles smaller than ``epsilon``."""
+    if len(points) < 3:
+        return list(points)
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        a, b = stack.pop()
+        (ax, ay), (bx, by) = points[a], points[b]
+        dx, dy = bx - ax, by - ay
+        norm = math.hypot(dx, dy)
+        best, idx = 0.0, -1
+        for i in range(a + 1, b):
+            px, py = points[i]
+            d = (
+                abs(dy * px - dx * py + bx * ay - by * ax) / norm
+                if norm
+                else math.hypot(px - ax, py - ay)
+            )
+            if d > best:
+                best, idx = d, i
+        if best > epsilon and idx > 0:
+            keep[idx] = True
+            stack += [(a, idx), (idx, b)]
+    return [p for p, k in zip(points, keep) if k]
+
+
+def _swept_angle(points: Sequence[Tuple[float, float]], centre: Tuple[float, float]) -> float:
+    """Total angle the path turns around ``centre`` (2*pi for a full loop)."""
+    total, prev = 0.0, None
+    for x, y in points:
+        a = math.atan2(y - centre[1], x - centre[0])
+        if prev is not None:
+            d = a - prev
+            while d > math.pi:
+                d -= 2 * math.pi
+            while d < -math.pi:
+                d += 2 * math.pi
+            total += d
+        prev = a
+    return abs(total)
 
 
 # --------------------------------------------------------------------------- classification
@@ -258,43 +319,110 @@ def _words_in(words: Sequence[Word], r: Rect, min_frac: float = 0.5) -> List[Wor
     return out
 
 
-# Where the baseline and the x-height middle sit inside a PyMuPDF word box
-# (which spans ascender to descender), as fractions of the box height.
-_BASELINE = 0.78
-_XMID = 0.52
+# Fallback for words without font metrics (rotated pages): where the baseline
+# and the x-height middle sit inside a PyMuPDF word box (ascender..descender).
+_BASELINE = 0.80
+_XMID = 0.55
+# With real font metrics (fractions of the font size): a stroke above
+# baseline - _STRIKE_FLOOR*size (and not above the x-height) strikes through; a
+# stroke from there down to _UNDER_CEIL*size below the baseline underlines.
+_STRIKE_FLOOR = 0.08
+_STRIKE_TOP = 0.6
+_UNDER_CEIL = 0.6
 
 
-def _horizontal_target(words: Sequence[Word], s: Stroke) -> Optional[Tuple[str, List[Word]]]:
-    """Decide whether a horizontal stroke strikes through or underlines a line.
+def _line_geometry(line_words: Sequence[Word]) -> Tuple[float, float, bool]:
+    """(baseline y, font size or box height, whether real metrics were used)."""
+    metric = [w for w in line_words if w.baseline is not None and w.size]
+    if metric:
+        return (
+            statistics.median(w.baseline for w in metric),
+            statistics.median(w.size for w in metric),
+            True,
+        )
+    top = statistics.median(w.rect[1] for w in line_words)
+    h = statistics.median(w.rect[3] - w.rect[1] for w in line_words) or 1e-6
+    return top + _BASELINE * h, h, False
 
-    Scores every text line the stroke spans by how close the stroke's median y
-    is to that line's baseline (underline) or x-height middle (strike), in
-    units of line height, and keeps the single best line.
+
+def _covered_words(words: Sequence[Word], s: Stroke, word_h: float) -> List[Word]:
+    """Words a horizontal stroke spans, ignoring the overshoot at its ends.
+
+    People start and end strikes a little beyond the phrase; trimming the
+    stroke's ends keeps a short neighbouring word ("a", "to") out of it.
     """
-    ys = sorted(p[1] for p in s.points)
-    y = ys[len(ys) // 2]
     x0, _, x1, _ = s.bbox
-    line_of = visual_lines(words)
-    lines: Dict[int, List[Word]] = {}
+    trim = min(0.06 * (x1 - x0), 0.45 * word_h)
+    x0, x1 = x0 + trim, x1 - trim
+    out = []
     for w in words:
         ww = (w.rect[2] - w.rect[0]) or 1e-6
         if _overlap_1d(w.rect[0], w.rect[2], x0, x1) / ww >= 0.5:
-            lines.setdefault(line_of[id(w)], []).append(w)
+            out.append(w)
+    return out
+
+
+def _horizontal_target(
+    words: Sequence[Word], s: Stroke, word_h: float = 12.0
+) -> Optional[Tuple[str, List[Word]]]:
+    """Decide whether a horizontal stroke strikes through or underlines a line.
+
+    Uses each line's real baseline and font size when known: above the
+    baseline (inside the x-height) is a strike, at or below it an underline.
+    Picks the single line the stroke belongs to.
+    """
+    ys = sorted(p[1] for p in s.points)
+    y = ys[len(ys) // 2]
+    line_of = visual_lines(words)
+    lines: Dict[int, List[Word]] = {}
+    for w in _covered_words(words, s, word_h):
+        lines.setdefault(line_of[id(w)], []).append(w)
     best: Optional[Tuple[float, str, List[Word]]] = None
     for line_words in lines.values():
-        top = statistics.median(w.rect[1] for w in line_words)
-        h = statistics.median(w.rect[3] - w.rect[1] for w in line_words) or 1e-6
-        strike = abs(y - (top + _XMID * h)) / h
-        under = (y - (top + _BASELINE * h)) / h
-        for score, kind, ok in (
-            (strike, "strikethrough", strike <= 0.2),
-            (abs(under), "underline", -0.12 <= under <= 0.45),
-        ):
-            if ok and (best is None or score < best[0]):
-                best = (score, kind, line_words)
+        base, size, metric = _line_geometry(line_words)
+        if metric:
+            rel = (base - y) / size  # > 0: above the baseline
+            if _STRIKE_FLOOR < rel <= _STRIKE_TOP:
+                cand = (abs(rel - 0.27), "strikethrough")
+            elif -_UNDER_CEIL <= rel <= _STRIKE_FLOOR:
+                cand = (abs(rel + 0.1), "underline")
+            else:
+                continue
+        else:
+            top = base - _BASELINE * size
+            strike = abs(y - (top + _XMID * size)) / size
+            under = (y - base) / size
+            if strike <= 0.2:
+                cand = (strike, "strikethrough")
+            elif -0.12 <= under <= 0.45:
+                cand = (abs(under), "underline")
+            else:
+                continue
+        if best is None or cand[0] < best[0]:
+            best = (cand[0], cand[1], line_words)
     if best is None:
         return None
     return best[1], best[2]
+
+
+def _x_band(w: Word) -> Tuple[float, float]:
+    """Vertical extent of the letters' x-height (where a cross-out must pass)."""
+    if w.baseline is not None and w.size:
+        return w.baseline - 0.5 * w.size, w.baseline
+    h = w.rect[3] - w.rect[1]
+    return w.rect[1] + 0.35 * h, w.rect[1] + 0.8 * h
+
+
+def _scribble_targets(words: Sequence[Word], rect: Rect, points) -> List[Word]:
+    """Words a cross-out really covers: its ink reaches the words' x-height."""
+    covered = _words_in(words, rect, 0.35)
+    hits = []
+    for w in covered:
+        lo, hi = _x_band(w)
+        mid = (lo + hi) / 2
+        if rect[1] <= mid <= rect[3]:
+            hits.append(w)
+    return hits
 
 
 def _swiped_words(words: Sequence[Word], s: Stroke) -> List[Word]:
@@ -315,6 +443,9 @@ def _swiped_words(words: Sequence[Word], s: Stroke) -> List[Word]:
     return [w for w in hits if line_of[id(w)] == line_of[id(best)]]
 
 
+_NUMBER = re.compile(r"^\(?\d{1,3}[.)]?$")
+
+
 def classify_stroke(s: Stroke, words: Sequence[Word], word_h: float) -> Tuple[str, List[Word]]:
     """Classify one stroke; returns (kind, words it targets). kind 'ink' = handwriting."""
     f = stroke_features(s)
@@ -323,28 +454,38 @@ def classify_stroke(s: Stroke, words: Sequence[Word], word_h: float) -> Tuple[st
     if s.is_highlighter:
         return "highlight", _swiped_words(words, s)
 
-    # Cross-out: dense back-and-forth ink that fills (not outlines) its box.
+    reversals = f.x_reversals + f.y_reversals
+    # Cross-out: back-and-forth ink that fills (not outlines) its box and
+    # reaches the words' x-height (writing *between* lines does not).
     if (
-        f.density > 4.0
-        and max(f.w, f.h) > 1.5 * word_h
-        and f.x_reversals + f.y_reversals >= 6
-        and (f.inner > 0.1 or f.x_reversals + f.y_reversals >= 20)
+        max(f.w, f.h) > 1.0 * word_h
+        and reversals >= 6
+        and (f.density > 4.0 or (f.density > 1.2 and f.inner > 0.1))
+        and (f.inner > 0.1 or reversals >= 20)
     ):
-        covered = _words_in(words, bbox, 0.35)
+        covered = _scribble_targets(words, bbox, s.points)
         if covered:
             return "scribble", covered
 
-    # Horizontal line: underline or strikethrough depending on where it sits.
-    if f.w > 4 * max(f.h, 1.0) and f.w > 1.5 * word_h and f.straightness > 0.75:
-        hit = _horizontal_target(words, s)
+    # Horizontal line (tremor and waves smoothed out): underline or strike.
+    # A wavy line is still a line: a flat band that never doubles back.
+    band = f.h < 0.35 * word_h and f.x_reversals <= 2
+    if (
+        f.w > 4 * max(f.h, 1.0)
+        and f.w > 0.5 * word_h
+        and (f.smooth_straightness > 0.85 or band)
+        and f.sagitta < 0.4 * word_h  # an arc (half a circle) bows far more
+        and abs(math.atan2(f.h, f.w)) < 0.35
+    ):
+        hit = _horizontal_target(words, s, word_h)
         if hit:
             return hit
 
-    # Enclosure around text: ink runs along the outline (possibly looping
-    # twice), the path is at least a perimeter long, and words sit inside.
+    # Enclosure around text: ink runs along the outline, sweeping (almost) a
+    # full turn - also a loop that is not quite closed, or drawn past its start.
     if (
         f.inner < 0.08
-        and (f.closure < 0.35 or f.length > 2.6 * max(f.w, f.h))
+        and f.swept >= 1.55 * math.pi
         and f.length > 1.8 * max(f.w, f.h)
         and min(f.w, f.h) > 0.8 * word_h
     ):
@@ -354,7 +495,7 @@ def classify_stroke(s: Stroke, words: Sequence[Word], word_h: float) -> Tuple[st
 
     # Vertical bar beside text (often retraced), not crossing any word, with
     # printed text close by on the lines it spans.
-    if f.h > 3 * max(f.w, 1.0) and f.h > 1.2 * word_h and f.w < word_h:
+    if f.h > 3 * max(f.w, 1.0) and f.h > 0.75 * word_h and f.w < word_h:
         if not _words_in(words, _inflate(bbox, 1, 0), 0.15) and any(
             bbox[1] - 2 <= _center(w.rect)[1] <= bbox[3] + 2
             and rect_distance(bbox, w.rect) <= 4 * word_h
@@ -364,7 +505,7 @@ def classify_stroke(s: Stroke, words: Sequence[Word], word_h: float) -> Tuple[st
 
     # Long straight rule that marks no text: a divider or a line under
     # handwriting. Kept out of note clustering so it cannot chain notes.
-    if f.straightness > 0.9 and f.length > 6 * word_h:
+    if f.smooth_straightness > 0.9 and f.length > 6 * word_h and f.sagitta < 0.4 * word_h:
         return "rule", []
 
     return "ink", []
@@ -378,6 +519,9 @@ def _bar_targets(bar: Rect, words: Sequence[Word], word_h: float) -> List[Word]:
     """
     y0, y1 = bar[1] - 2, bar[3] + 2
     on_lines = [w for w in words if y0 <= _center(w.rect)[1] <= y1]
+    # A bar in the gutter often sits next to a paragraph/list number: that
+    # number is not what the bar marks - skip it and look at the text.
+    on_lines = [w for w in on_lines if not _NUMBER.match(w.text)] or on_lines
     if not on_lines:
         return []
     bx = (bar[0] + bar[2]) / 2
@@ -392,6 +536,7 @@ def _bar_targets(bar: Rect, words: Sequence[Word], word_h: float) -> List[Word]:
         by_line.setdefault(line_of[id(w)], []).append(w)
     picked: List[Word] = []
     max_gap = 1.2 * word_h  # word spacing is ~0.3 word_h; column gutters are wider
+
     for line_words in by_line.values():
         line_words.sort(key=lambda w: w.rect[0] * outward)
         edge = bx
@@ -489,6 +634,11 @@ def analyze_page(page: PageInk, blocks: Optional[Sequence[TextBlock]] = None) ->
         else:
             marks.append(Mark(kind=kind, page=page.page, rect=s.bbox, strokes=[s], words=targets))
 
+    # Two arcs that meet end to end around text are one circle (a loop drawn
+    # in two strokes); test the joined path before treating them as writing.
+    joined, ink = _join_arcs(ink, words, word_h, page.page)
+    marks += joined
+
     # A "margin bar" hugging handwriting is a letter (l, 1, !), not a bar.
     kept: List[Mark] = []
     for m in marks:
@@ -509,7 +659,7 @@ def analyze_page(page: PageInk, blocks: Optional[Sequence[TextBlock]] = None) ->
 
     # Merge same-kind marks that are really one gesture (double bars, a
     # strikethrough drawn in two pulls, a scribble in several strokes).
-    marks = _merge_marks(marks, word_h)
+    marks = _merge_marks(marks, word_h, words)
     for m in marks:
         if m.kind == "margin_bar":
             m.words = _bar_targets(m.rect, words, word_h)
@@ -584,10 +734,90 @@ def analyze_page(page: PageInk, blocks: Optional[Sequence[TextBlock]] = None) ->
     return result
 
 
-def _merge_marks(marks: List[Mark], word_h: float) -> List[Mark]:
+def _join_arcs(
+    ink: List[Stroke], words: Sequence[Word], word_h: float, page: int
+) -> Tuple[List[Mark], List[Stroke]]:
+    """Pair curved strokes whose ends meet and test the joined path as a circle."""
+
+    def is_arc(s: Stroke) -> bool:
+        f = stroke_features(s)
+        return f.smooth_straightness < 0.9 or f.sagitta > 0.3 * word_h
+
+    arcs = [s for s in ink if s.length > 1.5 * word_h and is_arc(s)]
+    used: set = set()
+    out: List[Mark] = []
+    reach = 0.8 * word_h
+    for i, a in enumerate(arcs):
+        if id(a) in used:
+            continue
+        for b in arcs[i + 1 :]:
+            if id(b) in used:
+                continue
+            best = None
+            for pa in (a.points, a.points[::-1]):
+                for pb in (b.points, b.points[::-1]):
+                    gap = math.dist(pa[-1], pb[0])
+                    if gap <= reach and (best is None or gap < best[0]):
+                        best = (gap, pa + pb)
+            if best is None:
+                continue
+            joined = Stroke(
+                index=a.index, points=best[1], tool=a.tool, color=a.color, width=a.width
+            )
+            kind, targets = classify_stroke(joined, words, word_h)
+            if kind == "circle":
+                used.update((id(a), id(b)))
+                out.append(
+                    Mark(kind="circle", page=page, rect=joined.bbox, strokes=[a, b], words=targets)
+                )
+                break
+    return out, [s for s in ink if id(s) not in used]
+
+
+def _merge_marks(marks: List[Mark], word_h: float, all_words: Sequence[Word] = ()) -> List[Mark]:
     out: List[Mark] = []
     for kind in dict.fromkeys(m.kind for m in marks):
         same = [m for m in marks if m.kind == kind]
+        if kind in ("strikethrough", "underline", "highlight"):
+            # One line drawn in several pulls: same text line, small gaps.
+            rects = [m.rect for m in same]
+
+            def same_line(i: int, j: int) -> bool:
+                cy_i = (rects[i][1] + rects[i][3]) / 2
+                cy_j = (rects[j][1] + rects[j][3]) / 2
+                gap = max(rects[i][0], rects[j][0]) - min(rects[i][2], rects[j][2])
+                return abs(cy_i - cy_j) <= 0.4 * word_h and gap <= 0.8 * word_h
+
+            for g in _cluster_by(len(same), same_line):
+                parts = sorted((same[i] for i in g), key=lambda m: m.rect[0])
+                words: List[Word] = []
+                for p in parts:
+                    words += [w for w in p.words if w not in words]
+                if len(parts) > 1 and words and all_words:
+                    # Re-derive the words over the joined span: a word the
+                    # pulls met in the middle of belongs to neither half alone.
+                    line_of = visual_lines(all_words)
+                    lines = {line_of[id(w)] for w in words}
+                    x0 = min(p.rect[0] for p in parts)
+                    x1 = max(p.rect[2] for p in parts)
+                    trim = min(0.06 * (x1 - x0), 0.45 * word_h)
+                    words = [
+                        w
+                        for w in _reading_order(all_words)
+                        if line_of[id(w)] in lines
+                        and _overlap_1d(w.rect[0], w.rect[2], x0 + trim, x1 - trim)
+                        >= 0.5 * ((w.rect[2] - w.rect[0]) or 1e-6)
+                    ]
+                out.append(
+                    Mark(
+                        kind=kind,
+                        page=parts[0].page,
+                        rect=_union([p.rect for p in parts]),
+                        strokes=[s for p in parts for s in p.strokes],
+                        words=words,
+                    )
+                )
+            continue
         if kind in ("margin_bar", "scribble", "circle"):
             dx, dy = {
                 "margin_bar": (0.6 * word_h, 0.5 * word_h),

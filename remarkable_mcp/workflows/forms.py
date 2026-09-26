@@ -53,6 +53,7 @@ class AnswerArea:
     option: Optional[str]  # option label; None for checkbox/text
     page: int  # 1-based
     rect: Rect
+    label_rect: Optional[Rect] = None  # the printed label (circling it selects too)
 
 
 @dataclass
@@ -67,7 +68,13 @@ class FormRender:
             # Embedded image bytes stay out of the stored manifest.
             "fields": [{k: v for k, v in f.items() if k != "png"} for f in self.fields],
             "areas": [
-                {"field": a.field_id, "option": a.option, "page": a.page, "rect": list(a.rect)}
+                {
+                    "field": a.field_id,
+                    "option": a.option,
+                    "page": a.page,
+                    "rect": list(a.rect),
+                    **({"label_rect": list(a.label_rect)} if a.label_rect else {}),
+                }
                 for a in self.areas
             ],
         }
@@ -216,6 +223,11 @@ def _place_image(lay: "_Layout", png: bytes, caption: str, max_h: float = 190.0)
     lay.y += 10
 
 
+def _label_rect(text: str, size: float, x: float, y: float, h: float, width: float) -> Rect:
+    first = _wrap(text, size, width, "helv")[0]
+    return (x, y - 1, x + pymupdf.get_text_length(first, fontname="helv", fontsize=size), y - 1 + h)
+
+
 def _box(page, x: float, y: float, size: float = BOX) -> Rect:
     rect = (x, y, x + size, y + size)
     page.draw_rect(pymupdf.Rect(*rect), color=_BLACK, width=0.8)
@@ -258,10 +270,12 @@ def render_form(
             continue
         if t == "checkbox":
             lay.ensure(max(lay.measure(f["label"], 10.5, BOX + 8), BOX) + 10)
-            areas.append(AnswerArea(f["id"], None, lay.page_no, _box(lay.page, MARGIN_X, lay.y)))
+            box = _box(lay.page, MARGIN_X, lay.y)
             saved = lay.y
             lay.y -= 1
             h = lay.text(f"{f['label']}", 10.5, indent=BOX + 8)
+            label = _label_rect(f["label"], 10.5, MARGIN_X + BOX + 8, saved, h, lay.width - BOX - 8)
+            areas.append(AnswerArea(f["id"], None, lay.page_no, box, label))
             lay.y = saved + max(h, BOX) + 12
             continue
 
@@ -276,10 +290,11 @@ def render_form(
             for opt in f["options"]:
                 lay.ensure(max(lay.measure(opt, 10, 8 + BOX + 8), BOX) + 8)
                 rect = _box(lay.page, MARGIN_X + 8, lay.y, BOX)
-                areas.append(AnswerArea(f["id"], opt, lay.page_no, rect))
                 saved = lay.y
                 lay.y -= 1
                 h = lay.text(opt, 10, indent=8 + BOX + 8)
+                label = _label_rect(opt, 10, MARGIN_X + 8 + BOX + 8, saved, h, lay.width - BOX - 16)
+                areas.append(AnswerArea(f["id"], opt, lay.page_no, rect, label))
                 lay.y = saved + max(h, BOX) + 9
         elif t == "scale":
             steps = list(range(f["min"], f["max"] + 1))
@@ -482,20 +497,54 @@ class AreaScore:
     area: AnswerArea
     ink: float  # path length inside the (slightly grown) box, in box sides
     circled: bool
+    centred_ink: float = 0.0  # ink from strokes centred on this box
+    strokes_in: int = 0  # separate strokes that put ink into the box
 
     @property
     def selected(self) -> bool:
-        return self.circled or self.ink >= 0.6
+        return self.circled or self.centred_ink >= 0.6
+
+    @property
+    def stray(self) -> bool:
+        """Ink reaches the box, but the mark is centred elsewhere (between boxes)."""
+        return not self.selected and self.ink >= 0.6
 
     @property
     def cancelled(self) -> bool:
-        """Box filled solid - the usual way to undo a tick."""
-        return self.ink >= 6.0
+        """Box filled solid, or a tick crossed out (3+ strokes): undone."""
+        return self.ink >= 6.0 or self.strokes_in >= 3
+
+
+def _centre(r: Rect) -> Tuple[float, float]:
+    return (r[0] + r[2]) / 2, (r[1] + r[3]) / 2
+
+
+def _encloses_label(stroke: Stroke, label: Rect) -> bool:
+    """A loop drawn around the printed label text (not too big for it)."""
+    from remarkable_mcp.workflows.marks import _point_in_polygon
+
+    f = stroke_features(stroke)
+    sx0, sy0, sx1, sy1 = stroke.bbox
+    lw, lh = label[2] - label[0], label[3] - label[1]
+    if (
+        f.inner > 0.15
+        or (sx1 - sx0) < 0.6 * lw
+        or (sx1 - sx0) > 2.2 * lw + 40
+        or (sy1 - sy0) > 4 * lh
+    ):
+        return False
+    return _point_in_polygon(_centre(label), stroke.points)
 
 
 def _enclosure_owner(stroke: Stroke, areas: Sequence[AnswerArea]) -> Optional[AnswerArea]:
-    """The one area a loop is drawn around: the enclosed box nearest its centre."""
-    inside = [a for a in areas if _encloses(stroke, a.rect)]
+    """The one area a loop is drawn around - its box, or its printed label -
+    choosing the enclosed area nearest the loop's centre."""
+    inside = [
+        a
+        for a in areas
+        if _encloses(stroke, a.rect)
+        or (a.label_rect is not None and _encloses_label(stroke, a.label_rect))
+    ]
     if not inside:
         return None
     cx = (stroke.bbox[0] + stroke.bbox[2]) / 2
@@ -532,8 +581,17 @@ def score_areas(areas: Sequence[AnswerArea], pages: Dict[int, PageInk]) -> List[
         side = max(a.rect[2] - a.rect[0], a.rect[3] - a.rect[1])
         grown = (a.rect[0] - 2, a.rect[1] - 2, a.rect[2] + 2, a.rect[3] + 2)
         ink = ink_length_in(grown, plain) / (side or 1)
+        near = (
+            a.rect[0] - 0.3 * side,
+            a.rect[1] - 0.3 * side,
+            a.rect[2] + 0.3 * side,
+            a.rect[3] + 0.3 * side,
+        )
+        centred = [st for st in plain if _inside(_centre(st.bbox), near)]
+        centred_ink = ink_length_in(grown, centred) / (side or 1)
+        strokes_in = sum(1 for st in plain if ink_length_in(grown, [st]) / (side or 1) >= 0.3)
         circled = any(owner.get(id(st)) is a for st in strokes)
-        scores.append(AreaScore(a, ink, circled))
+        scores.append(AreaScore(a, ink, circled, centred_ink, strokes_in))
     return scores
 
 
@@ -551,7 +609,14 @@ class FieldAnswer:
 def read_answers(manifest: dict, pages: Dict[int, PageInk]) -> List[FieldAnswer]:
     """Resolve every field's value from the ink on ``pages`` (keyed by PDF page)."""
     areas = [
-        AnswerArea(a["field"], a["option"], a["page"], tuple(a["rect"])) for a in manifest["areas"]
+        AnswerArea(
+            a["field"],
+            a["option"],
+            a["page"],
+            tuple(a["rect"]),
+            tuple(a["label_rect"]) if a.get("label_rect") else None,
+        )
+        for a in manifest["areas"]
     ]
     by_field: Dict[str, List[AreaScore]] = {}
     for s in score_areas(areas, pages):
@@ -588,6 +653,11 @@ def read_answers(manifest: dict, pages: Dict[int, PageInk]) -> List[FieldAnswer]
             crossed = [s.area.option for s in scores if s.cancelled]
             if crossed:
                 ans.detail["cancelled"] = crossed
+            stray = [s.area.option for s in scores if s.stray and not s.cancelled]
+            if stray and ans.status == "empty":
+                # Ink reaches an option's box but the mark sits between options.
+                ans.status = "ambiguous"
+                ans.detail["ink_between"] = stray
         elif f["type"] == "text":
             s = scores[0]
             page = pages.get(s.area.page)

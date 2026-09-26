@@ -84,8 +84,15 @@ class Entry:
 
 
 def _is_cancel_stroke(s: Stroke, line_h: float) -> bool:
+    """A long, flat, straight-ish stroke (waves and tremor allowed)."""
     f = stroke_features(s)
-    return f.straightness > 0.85 and f.w > 6 * line_h and f.h < 1.5 * line_h
+    flat = f.h < max(0.6 * line_h, 4.0) and f.x_reversals <= 2
+    return (
+        (f.smooth_straightness > 0.85 or flat)
+        and f.sagitta < 0.6 * line_h
+        and f.w > 2.5 * line_h
+        and f.h < 1.5 * line_h
+    )
 
 
 def _lines(strokes: Sequence[Stroke]) -> List[List[Stroke]]:
@@ -143,18 +150,30 @@ def segment_entries(page: PageInk) -> List[Entry]:
 
 
 def _crosses_a_line(cancel: Stroke, lines: Sequence[Sequence[Stroke]], rect: Rect) -> bool:
-    """A strike runs through the middle of a written line (an underline sits below it)."""
-    cx0, cy0, cx1, cy1 = cancel.bbox
-    if cx1 - cx0 < 0.4 * (rect[2] - rect[0]):
-        return False
-    mid = (cy0 + cy1) / 2
+    """A strike runs through the body of a written line; an underline does not.
+
+    The body is where most of the line's ink is (25th-75th percentile of its
+    points' heights) - not its bounding box, which ascender and descender
+    loops stretch until the baseline sits inside it.
+    """
+    ys = sorted(p[1] for p in cancel.points)
+    mid = ys[len(ys) // 2]
+    cx0, _, cx1, _ = cancel.bbox
     for line in lines:
-        top = min(s.bbox[1] for s in line)
-        bottom = max(s.bbox[3] for s in line)
-        h = bottom - top
-        if top + 0.25 * h <= mid <= bottom - 0.2 * h:
+        lx0 = min(s.bbox[0] for s in line)
+        lx1 = max(s.bbox[2] for s in line)
+        if _overlap_1d(cx0, cx1, lx0, lx1) < 0.6 * (lx1 - lx0):
+            continue  # must cross most of that line
+        pts = sorted(p[1] for s in line for p in s.points)
+        lo = pts[int(0.25 * (len(pts) - 1))]
+        hi = pts[int(0.75 * (len(pts) - 1))]
+        if lo <= mid <= hi:
             return True
     return False
+
+
+def _overlap_1d(a0: float, a1: float, b0: float, b1: float) -> float:
+    return max(0.0, min(a1, b1) - max(a0, b0))
 
 
 def match_known(entry: Entry, known: Iterable[dict]) -> Optional[dict]:

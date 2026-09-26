@@ -128,6 +128,8 @@ class Word:
     rect: Rect
     block: int  # PyMuPDF block number
     line: int  # line number inside the block
+    baseline: Optional[float] = None  # y of the text baseline (from the font), if known
+    size: Optional[float] = None  # font size in points, if known
 
 
 @dataclass
@@ -220,18 +222,41 @@ def _page_words(pdf_doc, pdf_page: int) -> List[Word]:
     """Words in displayed-page coordinates (the space the ink lives in).
 
     get_text() reports unrotated coordinates; for pages with /Rotate the
-    rotation matrix maps them onto the page as shown on the tablet.
+    rotation matrix maps them onto the page as shown on the tablet. Each word
+    also gets the real baseline and font size of the text span it belongs to
+    (word boxes span ascender to descender, so the baseline cannot be derived
+    from the box reliably - fonts differ).
     """
     import fitz
 
     page = pdf_doc[pdf_page]
     matrix = page.rotation_matrix if page.rotation else None
+    spans = []
+    if matrix is None:
+        try:
+            for block in page.get_text("dict")["blocks"]:
+                for ln in block.get("lines", []):
+                    if tuple(ln.get("dir", (1, 0))) != (1, 0):
+                        continue  # vertical/rotated text: no horizontal baseline
+                    for sp in ln["spans"]:
+                        if sp.get("text", "").strip():
+                            spans.append((tuple(sp["bbox"]), sp["origin"][1], sp["size"]))
+        except Exception:  # baselines are an optimisation; words still work without
+            spans = []
     words = []
     for x0, y0, x1, y1, text, block, line, _wn in page.get_text("words"):
         rect = fitz.Rect(x0, y0, x1, y1)
         if matrix is not None:
             rect = (rect * matrix).normalize()
-        words.append(Word(text=text, rect=tuple(rect), block=block, line=line))
+        baseline = size = None
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        for (sx0, sy0, sx1, sy1), base, sz in spans:
+            if sx0 - 0.5 <= cx <= sx1 + 0.5 and sy0 - 0.5 <= cy <= sy1 + 0.5:
+                baseline, size = base, sz
+                break
+        words.append(
+            Word(text=text, rect=tuple(rect), block=block, line=line, baseline=baseline, size=size)
+        )
     return words
 
 

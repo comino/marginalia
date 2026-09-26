@@ -93,7 +93,11 @@ def test_translation_of_the_whole_page(reference):
         page,
         strokes=_map_strokes(page, lambda pts: [(x + dx, y + dy) for x, y in pts]),
         words=[
-            replace(w, rect=(w.rect[0] + dx, w.rect[1] + dy, w.rect[2] + dx, w.rect[3] + dy))
+            replace(
+                w,
+                rect=(w.rect[0] + dx, w.rect[1] + dy, w.rect[2] + dx, w.rect[3] + dy),
+                baseline=None if w.baseline is None else w.baseline + dy,
+            )
             for w in page.words
         ],
     )

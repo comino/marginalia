@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from remarkable_mcp.workflows.ink import Rect, Stroke
-from remarkable_mcp.workflows.marks import _cluster, _union, rect_distance
+from remarkable_mcp.workflows.marks import _cluster, _swept_angle, _union, rect_distance
 
 Point = Tuple[float, float]
 
@@ -234,10 +234,17 @@ def classify_outline(points: Sequence[Point], strokes: List[Stroke]) -> Optional
     length = _path_length(points)
     closure = math.dist(points[0], points[-1]) / size
 
-    # Closed outline. Flat shapes (text inputs, table borders) are fine: only
-    # require the short side to be more than a sliver.
-    if closure < 0.25 and length > 2.0 * size and min(w, h) > 0.08 * size:
-        simple = rdp(points, 0.07 * size)
+    # Closed outline - also a loop drawn a little past its start. Flat shapes
+    # (text inputs, table borders) are fine: the short side must just be more
+    # than a sliver.
+    swept = _swept_angle(points, ((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2))
+    closed = closure < 0.25 or swept >= 1.85 * math.pi
+    if closed and length > 2.0 * size and min(w, h) > 0.08 * size:
+        # A clean ellipse is an ellipse, whatever its aspect ratio.
+        if _ellipse_error(points, rect) < 0.07:
+            return Shape("ellipse", rect, strokes, rdp(points, 0.05 * min(w, h)))
+        # Tolerance from the short side: rounded corners collapse into corners.
+        simple = rdp(points, max(0.12 * min(w, h), 0.03 * size))
         if len(simple) > 2 and math.dist(simple[0], simple[-1]) < 0.25 * size:
             simple = simple[:-1]
         corners = [
@@ -281,19 +288,24 @@ def classify_outline(points: Sequence[Point], strokes: List[Stroke]) -> Optional
     return shape
 
 
-def _v_tip(stroke: Stroke) -> Optional[Point]:
-    """Tip of a small V-shaped stroke (an arrowhead candidate), else None."""
+def _v_tip(stroke: Stroke) -> Optional[List[Point]]:
+    """Possible tips of a small arrowhead stroke: the apex of an open V, or
+    every corner of a closed (outlined or filled) triangle. None otherwise."""
     sx0, sy0, sx1, sy1 = stroke.bbox
     size = max(sx1 - sx0, sy1 - sy0)
     if size < 3:
         return None
     simple = rdp(stroke.points, max(0.8, 0.12 * size))
-    if len(simple) != 3 or _angle(*simple) > 110:
-        return None
-    return simple[1]
+    if len(simple) == 3 and _angle(*simple) <= 110:
+        return [simple[1]]
+    if len(simple) >= 4 and math.dist(simple[0], simple[-1]) < 0.3 * size:
+        corners = simple[:-1]
+        if len(corners) == 3:
+            return corners
+    return None
 
 
-def _is_arrowhead(stroke: Stroke, line: Shape, tip: Optional[Point]) -> Optional[bool]:
+def _is_arrowhead(stroke: Stroke, line: Shape, tip: Optional[List[Point]]) -> Optional[bool]:
     """A small V next to one end of ``line``: returns True (end) / False (start) / None."""
     sx0, sy0, sx1, sy1 = stroke.bbox
     size = max(sx1 - sx0, sy1 - sy0)
@@ -301,9 +313,11 @@ def _is_arrowhead(stroke: Stroke, line: Shape, tip: Optional[Point]) -> Optional
         return None
     start, end = line.points[0], line.points[-1]
     reach = max(6.0, 0.8 * size)
-    if math.dist(tip, end) <= reach:
+    d_end = min(math.dist(t, end) for t in tip)
+    d_start = min(math.dist(t, start) for t in tip)
+    if d_end <= reach and d_end <= d_start:
         return True
-    if math.dist(tip, start) <= reach:
+    if d_start <= reach:
         return False
     return None
 
