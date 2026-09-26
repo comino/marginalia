@@ -227,3 +227,30 @@ def test_dense_page_is_fast():
     t0 = time.time()
     recognise(strokes)
     assert time.time() - t0 < 3.0
+
+
+def test_a_single_box_is_returned_by_the_sketch_tool(cloud, monkeypatch):  # noqa: F811
+    """Found in a live test: the tablet's shape snapping turns a drawn box into
+    a 5-point polygon, often slightly slanted. On its own it is not a
+    "diagram" (that rule keeps framed notes apart in regions), but the sketch
+    tool must still report it - a diagram being drawn starts as one box."""
+    import asyncio
+
+    import pymupdf
+
+    from remarkable_mcp.workflows.structure import sketch_tools
+    from test_workflows import FINELINER, _json_of
+
+    snapped = [(264, 100), (252, 174), (160, 163), (155, 100), (264, 100)]
+    assert classify_outline(snapped, []).kind == "rect"
+
+    doc = pymupdf.open()
+    doc.new_page(width=446, height=595)
+    uploaded = cloud.upload_document(doc.tobytes(), "One box", "pdf")
+    cloud.annotate(uploaded.id, {0: [(snapped, FINELINER, 446.0)]})
+    monkeypatch.setattr(
+        "remarkable_mcp.core.tools._find_target_document",
+        lambda items, by_id, name: next((d for d in items if d.VissibleName == name), None),
+    )
+    data = _json_of(asyncio.run(sketch_tools.remarkable_sketch("One box")))
+    assert [n["shape"] for n in data["nodes"]] == ["rect"] and data["edges"] == []

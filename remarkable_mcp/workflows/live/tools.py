@@ -66,7 +66,9 @@ def _analyse(doc_id: str, page_ids: List[str], mode: str, include_images: bool):
                 item["marks"] = [r.to_dict(None, "none") for r in reqs]
             if use == "sketch":
                 d = recognise(page.strokes)
-                item["diagram"] = d if d.is_diagram else None  # labels read after the lock
+                # A diagram being drawn starts as one box: report shapes as soon as
+                # there are any (labels are read after the lock).
+                item["diagram"] = d if d.nodes else None
 
             if include_images:
                 png, _ = render_merged_page_from_extracted_document(

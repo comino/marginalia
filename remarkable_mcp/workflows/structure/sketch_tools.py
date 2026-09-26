@@ -109,7 +109,9 @@ async def remarkable_sketch(
     except Exception as exc:
         return make_error("sketch_failed", str(exc), "Check remarkable_status().")
 
-    if not d.is_diagram:
+    # Asked for a sketch, any shape counts (a single box too). The stricter
+    # is_diagram only separates drawings from framed writing in regions/digest.
+    if not d.nodes:
         return make_response(
             {"document": document, "page": page, "nodes": [], "edges": []},
             "No diagram shapes found on this page"
