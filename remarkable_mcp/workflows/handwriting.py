@@ -6,8 +6,11 @@ the image small enough for a small vision model.
 
 Transcription backends, chosen by ``REMARKABLE_HANDWRITING_BACKEND``:
 
-- ``auto`` (default): google if ``GOOGLE_VISION_API_KEY`` is set, else claude
-  if ``ANTHROPIC_API_KEY`` is set, else none
+- ``auto`` (default): myscript if its keys are set, else google if
+  ``GOOGLE_VISION_API_KEY`` is set, else claude if ``ANTHROPIC_API_KEY`` is
+  set, else none
+- ``myscript``: MyScript iink - recognises the *strokes* (order and geometry),
+  the most accurate option for handwriting; see ``workflows.myscript``
 - ``google``: Google Cloud Vision DOCUMENT_TEXT_DETECTION
 - ``claude``: Anthropic Messages API with a vision model
   (``REMARKABLE_HANDWRITING_MODEL``, default ``claude-haiku-4-5``)
@@ -46,6 +49,10 @@ def backend() -> str:
     choice = os.environ.get("REMARKABLE_HANDWRITING_BACKEND", "auto").strip().lower()
     if choice != "auto":
         return choice
+    from remarkable_mcp.workflows import myscript
+
+    if myscript.configured():
+        return "myscript"
     if os.environ.get("GOOGLE_VISION_API_KEY"):
         return "google"
     if os.environ.get("ANTHROPIC_API_KEY"):
@@ -120,17 +127,31 @@ def _cache_key(png: bytes, engine: str) -> str:
     variant = engine
     if engine == "claude":
         variant += ":" + os.environ.get("REMARKABLE_HANDWRITING_MODEL", _DEFAULT_CLAUDE_MODEL)
+    elif engine == "myscript":
+        variant += ":" + os.environ.get("MYSCRIPT_LANGUAGE", "en_US")
     digest = hashlib.sha1(variant.encode() + b"\0" + png).hexdigest()[:24]
     return f"{engine}-{digest}"
 
 
-def transcribe(png: bytes, engine: Optional[str] = None) -> Tuple[Optional[str], str]:
-    """Return (text or None, engine used). Never raises."""
+def _strokes_key(strokes: Sequence[Stroke]) -> bytes:
+    return "|".join(s.fingerprint() for s in sorted(strokes, key=lambda s: s.index)).encode()
+
+
+def transcribe(
+    png: bytes, engine: Optional[str] = None, strokes: Optional[Sequence[Stroke]] = None
+) -> Tuple[Optional[str], str]:
+    """Return (text or None, engine used). Never raises.
+
+    Stroke-based engines (myscript) use ``strokes``; image engines use ``png``.
+    Without strokes, myscript falls back to the next image engine available.
+    """
     engine = engine or backend()
+    if engine == "myscript" and not strokes:
+        engine = _image_fallback()
     if engine == "none":
         return None, engine
     cache = Store("handwriting-cache")
-    key = _cache_key(png, engine)
+    key = _cache_key(_strokes_key(strokes) if engine == "myscript" else png, engine)
     try:
         hit = cache.get(key)
     except Exception:
@@ -138,7 +159,11 @@ def transcribe(png: bytes, engine: Optional[str] = None) -> Tuple[Optional[str],
     if hit is not None:
         return hit.get("text"), engine
     try:
-        if engine == "google":
+        if engine == "myscript":
+            from remarkable_mcp.workflows import myscript
+
+            text = myscript.recognise_text(strokes)
+        elif engine == "google":
             text = _google(png)
         elif engine == "claude":
             text = _claude(png)
@@ -158,8 +183,19 @@ def transcribe(png: bytes, engine: Optional[str] = None) -> Tuple[Optional[str],
     return text, engine
 
 
+def _image_fallback() -> str:
+    if os.environ.get("GOOGLE_VISION_API_KEY"):
+        return "google"
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "claude"
+    return "none"
+
+
 def transcribe_many(
-    pngs: Sequence[bytes], engine: Optional[str] = None, deadline: float = 50.0
+    pngs: Sequence[bytes],
+    engine: Optional[str] = None,
+    deadline: float = 50.0,
+    strokes: Optional[Sequence[Sequence[Stroke]]] = None,
 ) -> List[Tuple[Optional[str], str]]:
     """Transcribe crops in parallel; crops not done by ``deadline`` seconds get None.
 
@@ -174,7 +210,11 @@ def transcribe_many(
         return [(None, engine) for _ in pngs]
     results: List[Tuple[Optional[str], str]] = [(None, engine) for _ in pngs]
     pool = cf.ThreadPoolExecutor(max_workers=4)
-    futures = {pool.submit(transcribe, png, engine): i for i, png in enumerate(pngs)}
+    groups = list(strokes) if strokes is not None else [None] * len(pngs)
+    futures = {
+        pool.submit(transcribe, png, engine, group): i
+        for i, (png, group) in enumerate(zip(pngs, groups))
+    }
     try:
         for fut in cf.as_completed(futures, timeout=deadline):
             results[futures[fut]] = fut.result()

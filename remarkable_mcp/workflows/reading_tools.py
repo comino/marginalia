@@ -253,7 +253,9 @@ async def remarkable_reading_notes(
             for _, n in notes
         ]
         todo = [i for i, c in enumerate(crops) if c is not None]
-        texts = handwriting.transcribe_many([crops[i] for i in todo], engine)
+        texts = handwriting.transcribe_many(
+            [crops[i] for i in todo], engine, strokes=[notes[i][1].strokes for i in todo]
+        )
         text_at = {i: t for i, (t, _) in zip(todo, texts)}
         quotes = [
             _quote_from_request(r, text_at.get(i), rec.get("url")) for i, (r, _) in enumerate(notes)

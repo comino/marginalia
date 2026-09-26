@@ -197,18 +197,28 @@ def _read(record: dict, include_images: bool):
     out_fields = []
     values = {}
     crops = {}  # field id / remark id -> png
+    ink_of = {}  # same keys -> strokes (for stroke-based recognition)
     for ans in answers:
         if ans.field["type"] == "text" and ans.strokes:
             crops[ans.field["id"]] = handwriting.render_strokes_png(ans.strokes, ans.rect)
+            ink_of[ans.field["id"]] = ans.strokes
     remarks = []
     for pno, strokes in stray_strokes(manifest, pages).items():
         for g in _cluster([s.bbox for s in strokes], 12, 8):
             group = [strokes[i] for i in g]
             label = f"remark-p{pno}-{len(remarks) + 1}"
             crops[label] = handwriting.render_strokes_png(group, _union([s.bbox for s in group]))
+            ink_of[label] = group
             remarks.append({"id": label, "page": pno, "text": None})
     labels = list(crops)
-    texts = dict(zip(labels, handwriting.transcribe_many([crops[k] for k in labels], engine)))
+    texts = dict(
+        zip(
+            labels,
+            handwriting.transcribe_many(
+                [crops[k] for k in labels], engine, strokes=[ink_of[k] for k in labels]
+            ),
+        )
+    )
 
     for ans in answers:
         f = ans.field

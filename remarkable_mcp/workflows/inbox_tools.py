@@ -192,9 +192,14 @@ async def remarkable_inbox(
 
     wanted = [(s, e) for s, e in current if not pending_only or s["status"] == "pending"]
     crops = {s["id"]: handwriting.render_strokes_png(e.strokes, e.rect) for s, e in wanted}
+    ink_of = {s["id"]: e.strokes for s, e in wanted}
     todo = [sid for sid in crops if not known[sid].get("text")]
     results = await asyncio.to_thread(
-        handwriting.transcribe_many, [crops[sid] for sid in todo], handwriting.backend()
+        handwriting.transcribe_many,
+        [crops[sid] for sid in todo],
+        handwriting.backend(),
+        50.0,
+        [ink_of[sid] for sid in todo],
     )
     for sid, (text, _engine) in zip(todo, results):
         if text:

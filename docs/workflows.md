@@ -260,7 +260,8 @@ page underneath) and passed to a backend chosen by
 
 | Value | Backend |
 |-------|---------|
-| `auto` (default) | `google` if `GOOGLE_VISION_API_KEY` is set, else `claude` if `ANTHROPIC_API_KEY` is set, else `none` |
+| `auto` (default) | `myscript` if its keys are set, else `google` if `GOOGLE_VISION_API_KEY` is set, else `claude` if `ANTHROPIC_API_KEY` is set, else `none` |
+| `myscript` | [MyScript iink](https://developer.myscript.com) stroke recognition, which reads the pen strokes themselves rather than an image. It is the most accurate option. Needs `MYSCRIPT_APPLICATION_KEY` and `MYSCRIPT_HMAC_KEY`; set the language with `MYSCRIPT_LANGUAGE` (default `en_US`, e.g. `de_DE`) |
 | `google` | Google Cloud Vision document text detection |
 | `claude` | Anthropic Messages API vision; model from `REMARKABLE_HANDWRITING_MODEL` (default `claude-haiku-4-5`) |
 | `tesseract` | Local Tesseract (weak on handwriting) |

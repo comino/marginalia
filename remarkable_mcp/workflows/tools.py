@@ -82,11 +82,13 @@ def _note_payloads(requests, ink, include_images: bool):
                 images.append((mark.id, "mark in context", png))
             continue
         png = handwriting.render_strokes_png(note.strokes, note.rect)
-        crops.append((mark.id, png))
+        crops.append((mark.id, png, note.strokes))
         if include_images:
             images.append((mark.id, "handwritten note", png))
-    results = handwriting.transcribe_many([png for _, png in crops], engine)
-    for (mark_id, _), (text, used) in zip(crops, results):
+    results = handwriting.transcribe_many(
+        [png for _, png, _ in crops], engine, strokes=[strokes for _, _, strokes in crops]
+    )
+    for (mark_id, _, _), (text, used) in zip(crops, results):
         if text is not None:
             notes[mark_id] = (text, f"transcribed:{used}")
         else:

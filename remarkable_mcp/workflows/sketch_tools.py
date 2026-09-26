@@ -90,7 +90,9 @@ async def remarkable_sketch(
         d = recognise(pg.strokes, region=tuple(region) if region else None)
         labels = d.labels()
         crops = [handwriting.render_strokes_png(lab.strokes, lab.rect) for lab in labels]
-        texts = handwriting.transcribe_many(crops, handwriting.backend())
+        texts = handwriting.transcribe_many(
+            crops, handwriting.backend(), strokes=[lab.strokes for lab in labels]
+        )
         for lab, (text, _engine) in zip(labels, texts):
             lab.text = text
         return pg, d, list(zip(labels, crops))
@@ -171,7 +173,11 @@ async def remarkable_regions(
         regions.sort(key=lambda r: (round(r[1][1] / 20), r[1][0]))
         crops = [handwriting.render_strokes_png(g, r) for _, r, g in regions]
         writing = [i for i, (k, _, _) in enumerate(regions) if k == "writing"]
-        texts = handwriting.transcribe_many([crops[i] for i in writing], handwriting.backend())
+        texts = handwriting.transcribe_many(
+            [crops[i] for i in writing],
+            handwriting.backend(),
+            strokes=[regions[i][2] for i in writing],
+        )
         text_by_index = {i: t for i, (t, _) in zip(writing, texts)}
         return pg, regions, crops, text_by_index
 

@@ -59,3 +59,25 @@ def test_not_configured(monkeypatch):
     monkeypatch.delenv("MYSCRIPT_APPLICATION_KEY", raising=False)
     assert not myscript.configured()
     assert myscript.recognise_text(_strokes()) is None
+
+
+def test_handwriting_pipeline_prefers_strokes(monkeypatch, tmp_path):
+    from remarkable_mcp.workflows import handwriting
+
+    monkeypatch.setenv("REMARKABLE_WORKFLOW_STATE", str(tmp_path))
+    monkeypatch.delenv("REMARKABLE_HANDWRITING_BACKEND", raising=False)
+    monkeypatch.delenv("GOOGLE_VISION_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("MYSCRIPT_APPLICATION_KEY", "app")
+    monkeypatch.setenv("MYSCRIPT_HMAC_KEY", "secret")
+    calls = []
+    monkeypatch.setattr(myscript, "recognise_text", lambda s: calls.append(len(s)) or "tick")
+    assert handwriting.backend() == "myscript"
+    strokes = _strokes()
+    png = handwriting.render_strokes_png(strokes)
+    assert handwriting.transcribe_many([png], strokes=[strokes]) == [("tick", "myscript")]
+    # Cached by stroke fingerprints: no second API call.
+    assert handwriting.transcribe(png, strokes=strokes) == ("tick", "myscript")
+    assert calls == [2]
+    # No strokes and no image engine configured: nothing to do.
+    assert handwriting.transcribe(png) == (None, "none")
