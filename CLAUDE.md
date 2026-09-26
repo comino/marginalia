@@ -8,7 +8,7 @@ documents every workflow tool; `docs/core.md` the core tools.
 
 ## Working here
 
-- `uv sync --all-extras && uv run pytest -q` — ~710 offline tests, ~40 s. Gate
+- `uv sync --all-extras && uv run pytest -q` — ~1080 offline tests, ~60 s. Gate
   commits on pytest's exit code (not on `| tail`).
 - `uv run ruff check . && uv run ruff format --check .` — line length 100;
   long lines are allowed only in `test_*.py` and the ported `trmnl/` code.

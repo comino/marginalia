@@ -161,7 +161,7 @@ details are in [docs/workflows.md#autopilot](docs/workflows.md#autopilot).
 
 ```bash
 uv sync --all-extras
-uv run pytest -q          # ~810 tests, offline, about 45 s
+uv run pytest -q          # ~1080 tests, offline, about 60 s
 uv run ruff check . && uv run ruff format --check .
 ```
 
@@ -177,7 +177,7 @@ per-feature tests, the suite includes:
   watcher; missing or hung agents for the autopilot.
 - **Real tools:** real `git diff` and SyncTeX (skipped when TeX is missing).
 
-Each round of features got an independent code review (five rounds so far,
+Each round of features got an independent code review (six rounds so far,
 including a whole-system security review and adversarial testing of the ink
 classifiers), and every finding was fixed with a regression test. Metamorphic
 tests pin down invariants: moving the page, reversing strokes, changing the
