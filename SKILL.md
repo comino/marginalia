@@ -92,6 +92,8 @@ For handwriting OCR, add a Google Vision API key:
 | `remarkable_review_send` | Send a Markdown draft to the tablet for pen review |
 | `remarkable_review_collect` | Get the review's marks as change requests with source line numbers |
 | `remarkable_review_list` | See which reviews have new marks |
+| `remarkable_ask` / `remarkable_form_*` | Questions and forms answered with ticks on the tablet |
+| `remarkable_inbox*` | Handwritten requests in an "Agent Inbox" become agent tasks |
 
 ## Workflow
 

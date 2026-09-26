@@ -575,9 +575,10 @@ def register_workflow_tools(write_enabled: bool) -> None:
     if write_enabled:
         mcp.tool(annotations=_SEND)(remarkable_review_send)
 
-    from remarkable_mcp.workflows import form_tools
+    from remarkable_mcp.workflows import form_tools, inbox_tools
 
     form_tools.register(mcp, write_enabled)
+    inbox_tools.register(mcp, write_enabled)
 
 
 def _register_on_import() -> None:

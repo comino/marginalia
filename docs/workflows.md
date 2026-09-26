@@ -11,6 +11,13 @@ happen in the server, so a small model can run the workflows with a few calls.
 | `remarkable_review_collect` | Turn the pen marks on a review into change requests with source lines |
 | `remarkable_review_list` | Show review rounds and which have new marks waiting |
 | `remarkable_annotations` | Interpret the pen marks on any annotated PDF or notebook |
+| `remarkable_ask` | Ask one question on the tablet; the user answers with a tick (write mode, cloud) |
+| `remarkable_form_send` | Put a form with checkboxes, choices, scales and write-in fields on the tablet |
+| `remarkable_form_read` | Read a form's answers from where the ink is |
+| `remarkable_form_list` | Show sent forms and which have new answers |
+| `remarkable_inbox_setup` | Create (or register) the Agent Inbox document |
+| `remarkable_inbox` | Get the handwritten requests from the inbox as tasks |
+| `remarkable_inbox_done` | Mark requests done and optionally reply with a PDF on the tablet |
 
 ## Pen review round-trip
 
@@ -104,6 +111,53 @@ Paragraphs whose text changed get a black bar in the left margin. The
 `responses` go on a closing page that quotes each original comment next to what
 was done about it.
 
+## Forms and questions
+
+```python
+remarkable_ask("Publish the DuckDB post on Tuesday?")                 # Yes / No + comment
+remarkable_ask("Which title?", ["Disposable DuckDB", "SQL without a shell"])
+remarkable_form_send("Weekly check-in", [
+    {"id": "energy", "type": "scale", "label": "Energy", "min": 1, "max": 5},
+    {"id": "focus", "type": "multi", "label": "Focus areas", "options": ["Thesis", "MyScore", "Climaid"]},
+    {"id": "blockers", "type": "text", "label": "Blockers", "lines": 3},
+])
+remarkable_form_read("<form id>")
+```
+
+Choice answers need no handwriting recognition. The server knows where every
+answer box is, and an option counts as selected when there is a tick or cross
+inside its box or a loop around it. Filling a box solid undoes a tick. If a
+single-choice field has several options marked, it comes back as `ambiguous`,
+with the candidates listed. Write-in fields and margin remarks go through the
+handwriting pipeline.
+
+```json
+{"answered": true,
+ "values": {"answer": "Yes", "comment": "only after the intro rewrite"},
+ "fields": [{"id": "answer", "type": "choice", "status": "answered", "value": "Yes"}]}
+```
+
+Field types are `checkbox`, `choice`, `multi`, `scale` and `text`, plus
+`heading` and `info` for layout. Forms go to `/Agent/Forms`. A form counts as
+`done` once it is moved to a folder named `Done` or `Answered`.
+
+## Agent Inbox
+
+`remarkable_inbox_setup()` uploads a ruled "Agent Inbox" PDF to `/Agent`.
+Pass `document="My notebook"` to use an existing notebook instead. On the
+inbox, you:
+
+- write one request per block, with an empty line between requests
+- strike a request through to cancel it (an underline under your writing is ignored)
+- add `#tags` to route requests; they come back in `tags`
+
+`remarkable_inbox()` returns the requests that need action: stable id, page,
+text and tags. `remarkable_inbox_done(entries=[...], replies={id: "…"})`
+acknowledges requests and uploads one "Replies" PDF to `/Agent/Replies`, so
+the answers show up on the tablet. A request you add to after it was marked
+done comes back as pending. Requests are recognised by their stroke
+fingerprints, so extending one updates it rather than creating a new entry.
+
 ## Annotations on any document
 
 `remarkable_annotations(document, pages=None, include_images=False)` runs the
@@ -136,9 +190,15 @@ the marks already returned, and the transcription cache are JSON files under
 (`~/.local/state/remarkable-mcp`):
 
 ```text
-reviews/<review>.json        versions, block manifests, source text, seen marks
+reviews/<review>.json        versions, block manifests, source text, seen strokes, requests
+forms/<form>.json            field geometry, last answers
+inbox/<name>.json            entries (fingerprints, status, text, replies)
 handwriting-cache/<hash>.json
 ```
+
+Status checks compare hashes of the stroke files from the document metadata, so
+they need no download. Opening a document on the tablet doesn't count as a
+change.
 
 `REMARKABLE_REVIEW_FOLDER` changes the default upload folder (`/Review`).
 
