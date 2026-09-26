@@ -56,4 +56,5 @@ The maintainer's Claude Code registers the server as `remarkable` via
 After pushing to main, run the same `uvx` command once with
 `--refresh-package marginalia` or new sessions may use a cached build. The
 autopilot runs as the systemd user service `remarkable-autopilot`, pinned to a
-release tag (`contrib/remarkable-autopilot.service`).
+release tag (`contrib/remarkable-autopilot.service`). Release tags are
+`marginalia-X.Y.Z` — plain `vX.Y.Z` tags are inherited from upstream and point at upstream code.
