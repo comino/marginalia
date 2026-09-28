@@ -1,8 +1,7 @@
-<p align="center">
-  <img src="docs/assets/marginalia.svg" width="240" alt="Marginalia: pen marks on a page become structured results">
-</p>
-
-<h1 align="center">Marginalia</h1>
+<h1 align="center">
+  <img src="docs/assets/marginalia.svg" width="72" alt=""><br>
+  Marginalia
+</h1>
 
 <!-- mcp-name: io.github.comino/marginalia -->
 
@@ -13,21 +12,118 @@
 
 <p align="center">
   <a href="https://github.com/comino/marginalia/actions/workflows/ci.yml"><img src="https://github.com/comino/marginalia/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/comino/marginalia/releases"><img src="https://img.shields.io/github/v/release/comino/marginalia?label=release&color=1a3390" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/python-3.10%E2%80%933.12-blue" alt="Python 3.10–3.12">
   <img src="https://img.shields.io/badge/MCP-server-black" alt="MCP server">
+  <img src="https://img.shields.io/badge/tests-1000%2B-2ea44f" alt="1000+ tests">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
 </p>
 
----
+<p align="center">
+  <img src="docs/assets/hero.svg" width="100%" alt="A draft gets a strike, a circled phrase with a margin note and an underline with a note; Marginalia returns them as change requests with the exact source line.">
+</p>
 
 Other MCP servers give an agent *files* from your tablet. Marginalia gives it
 the **meaning of your pen marks**. A strike-through becomes "delete these
-words at line 42". A circle plus a margin note becomes a change request on
+words at line 3". A circle plus a margin note becomes a change request on
 that paragraph. A tick becomes an answer, and a boxes-and-arrows sketch
 becomes a Mermaid diagram.
 
 The geometry, anchoring, state and recognition happen in the server, so even
 small models can drive these workflows with a couple of tool calls.
+
+## See it work
+
+Real output. Every image below is drawn with synthetic pen ink on the PDFs
+Marginalia renders, and read back by the same code the tools run
+([`docs/assets/make_gallery.py`](docs/assets/make_gallery.py) regenerates
+all of it).
+
+<table>
+<tr>
+<th width="50%">Tick a form on the tablet…</th>
+<th width="50%">…the agent gets the answers</th>
+</tr>
+<tr>
+<td><img src="docs/assets/gallery/form.png" width="420" alt="A form with ticks on Yes, Blog and HN and a handwritten note"></td>
+<td>
+
+<sub><code>remarkable_form_read(form_id)</code></sub>
+
+```json
+{
+  "answered": true,
+  "values": {
+    "publish": "Yes",
+    "where": ["Blog", "HN"],
+    "notes": "after the typo fix"
+  }
+}
+```
+
+No OCR for the boxes: ticks, crosses and circles are read from the answer
+boxes' geometry.
+
+</td>
+</tr>
+<tr>
+<th>Write requests into the Agent Inbox…</th>
+<th>…they become tasks (a struck one is cancelled)</th>
+</tr>
+<tr>
+<td><img src="docs/assets/gallery/inbox.png" width="420" alt="Three handwritten requests with tags; the second one is struck through"></td>
+<td>
+
+<sub><code>remarkable_inbox(pending_only=False)</code></sub>
+
+```json
+[
+  {"id": "eb428dbb9", "status": "pending",
+   "text": "Summarise the DuckDB post for LinkedIn",
+   "tags": ["blog"]},
+  {"id": "e22b807ce", "status": "cancelled",
+   "text": "Book a train to Munich for Friday",
+   "tags": ["travel"]},
+  {"id": "ed456d0ab", "status": "pending",
+   "text": "Find three papers on multivariate forecasting",
+   "tags": ["thesis"]}
+]
+```
+
+</td>
+</tr>
+<tr>
+<th>Sketch a diagram…</th>
+<th>…get a clean redraw, nodes/edges and Mermaid</th>
+</tr>
+<tr>
+<td><img src="docs/assets/gallery/sketch.png" width="420" alt="A hand-drawn flow: Tablet box, Marginalia ellipse, new ink? diamond, Agent box, arrows"></td>
+<td><img src="docs/assets/gallery/sketch.svg" width="420" alt="The same diagram redrawn cleanly by Marginalia"></td>
+</tr>
+<tr>
+<td colspan="2">
+
+<sub><code>remarkable_sketch("Whiteboard")</code> → the Mermaid it returns, rendered by GitHub:</sub>
+
+```mermaid
+flowchart TD
+    n1["Tablet"]
+    n2(["Marginalia"])
+    n3{"new ink?"}
+    n4["Agent"]
+    n1 --> n2
+    n2 --> n3
+    n3 --> n4
+    n4 --> n2
+```
+
+</td>
+</tr>
+</table>
+
+<sub>Handwriting text (the notes above) comes from the configured handwriting
+backend (MyScript, Google Vision or Claude); without one, the agent gets the
+crops to read itself.</sub>
 
 ## What you do on paper → what the agent gets
 
@@ -36,14 +132,14 @@ small models can drive these workflows with a couple of tool calls.
 | **Pen review** | Mark up a draft the agent sent (strike, circle, underline, margin notes) | Change requests with the exact source file line, then v2 with change bars |
 | **Code review** | Mark up a pull request diff | GitHub review comments on `path:line` plus your verdict |
 | **Thesis / LaTeX review** | Mark up the compiled PDF | Edits at `.tex` file:line, resolved through SyncTeX |
-| **Forms and questions** | Tick, cross or circle answers | `{"publish": "Yes", "channels": ["LinkedIn"]}`, with no OCR needed |
+| **Forms and questions** | Tick, cross or circle answers | `{"publish": "Yes", "where": ["Blog", "HN"]}`, with no OCR needed |
 | **Clarify** | Answer a question that shows you *your own* unclear mark | The resolved intent |
 | **Triage sheets** | One tick per row for issues, PRs or mails | A decision per item, ready to apply |
 | **Agent Inbox** | Write requests with `#tags`; strike one through to cancel | Tasks with stable ids; replies come back as a PDF |
 | **Sketch → diagram** | Draw boxes, circles, diamonds and arrows | Nodes and edges, Mermaid, a clean SVG |
 | **Tables, wireframes, math** | Draw a table, a UI wireframe or equations | Markdown/CSV, an HTML prototype, LaTeX |
 | **Reading queue** | Highlight and annotate a clipped web article | Quotes with deep links back to the passage |
-| **Live** | Just draw | Near-live changes as you write (`remarkable_live_watch`) |
+| **Live** | Write, then close the document | The changed pages, analysed, seconds after the tablet syncs (`remarkable_live_watch`) |
 
 Start every session with **`remarkable_whats_new`**. It lists everything that
 changed across all workflows, with the next tool call for each item.
@@ -134,8 +230,10 @@ Prompts: `tablet_check_in`, `review_draft`, `ask_on_tablet`, `triage_on_paper`,
 ## Autopilot
 
 `marginalia-autopilot` reacts to the tablet without anyone opening a session.
-It watches the sync stream and starts a headless agent of your choice when
-something needs attention. Run it as a systemd user service
+It watches the sync stream and, when a tracked document (a review, form, the
+Agent Inbox, a clipped article) gets new ink, starts a headless agent of your
+choice. Write a request into the inbox, close it, and the answer arrives on
+the tablet a few minutes later. Run it as a systemd user service
 ([contrib/remarkable-autopilot.service](contrib/remarkable-autopilot.service));
 details are in [docs/workflows.md#autopilot](docs/workflows.md#autopilot).
 
@@ -168,6 +266,9 @@ show; nothing is mirrored automatically. See **[docs/trmnl.md](docs/trmnl.md)**.
 uv sync --all-extras
 uv run pytest -q          # ~1080 tests, offline, about 60 s
 uv run ruff check . && uv run ruff format --check .
+
+# regenerate the README gallery and the animated hero from the real engines
+uv run --with Hershey-Fonts python docs/assets/make_gallery.py
 ```
 
 The tests run without a tablet. Ink is synthesised as real v6 `.rm` files, and
@@ -197,10 +298,15 @@ remarkable_mcp/
                  forms/ · inbox/ · structure/ (sketch, table, wireframe) · reading/
                  live/ (watcher, autopilot) · overview, state, safety
   trmnl/         TRMNL display tools, independent of the reMarkable side
-docs/            workflows.md (workflow layer) · core.md (core tools) · …
+docs/            workflows.md (workflow layer) · core.md (core tools) · trmnl.md · …
+docs/assets/     hero + gallery, generated by make_gallery.py
 tests/           pytest suite (offline; synthetic ink, fake cloud)
 contrib/         systemd unit for the autopilot
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved, [CHANGELOG.md](CHANGELOG.md)
+for what changed, and [SECURITY.md](SECURITY.md) for the security model and how
+to report a vulnerability.
 
 ## Credits
 

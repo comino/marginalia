@@ -1,0 +1,75 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "shape": "rect",
+      "label": "Tablet",
+      "rect": [
+        29.3,
+        38.9,
+        129.4,
+        90.3
+      ]
+    },
+    {
+      "id": "n2",
+      "shape": "ellipse",
+      "label": "Marginalia",
+      "rect": [
+        161.3,
+        40.4,
+        281.1,
+        90.1
+      ]
+    },
+    {
+      "id": "n3",
+      "shape": "diamond",
+      "label": "new ink?",
+      "rect": [
+        160.1,
+        152.4,
+        284.2,
+        226.6
+      ]
+    },
+    {
+      "id": "n4",
+      "shape": "rect",
+      "label": "Agent",
+      "rect": [
+        319.8,
+        164.0,
+        420.3,
+        215.2
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "n1",
+      "to": "n2",
+      "directed": true,
+      "label": null
+    },
+    {
+      "from": "n2",
+      "to": "n3",
+      "directed": true,
+      "label": null
+    },
+    {
+      "from": "n3",
+      "to": "n4",
+      "directed": true,
+      "label": null
+    },
+    {
+      "from": "n4",
+      "to": "n2",
+      "directed": true,
+      "label": null
+    }
+  ],
+  "free_text": []
+}

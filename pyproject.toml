@@ -82,6 +82,8 @@ select = ["E", "F", "W", "I"]
 "remarkable_mcp/trmnl/*" = ["E501"]
 # Tests carry long literal fixtures (strokes, payloads); keep them readable on one line.
 "tests/*.py" = ["E501"]
+# The gallery generator embeds an SVG template; its lines are markup, not code.
+"docs/assets/make_gallery.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

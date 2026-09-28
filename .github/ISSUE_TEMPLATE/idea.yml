@@ -1,0 +1,10 @@
+name: Idea
+description: A workflow or tool that would make the tablet a better agent front end
+labels: [idea]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you do on paper, and what should the agent get back?
+    validations:
+      required: true

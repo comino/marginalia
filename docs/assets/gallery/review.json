@@ -1,0 +1,42 @@
+[
+  {
+    "page": 1,
+    "kind": "strikethrough",
+    "intent": "delete",
+    "target": "really very",
+    "paragraph": 2,
+    "src_lines": [
+      3,
+      4
+    ],
+    "src_line": 3
+  },
+  {
+    "page": 1,
+    "kind": "circle",
+    "intent": "change",
+    "target": "no server,",
+    "paragraph": 3,
+    "src_lines": [
+      6,
+      7
+    ],
+    "src_line": 6,
+    "note": "say: zero setup",
+    "note_status": "transcribed"
+  },
+  {
+    "page": 1,
+    "kind": "underline",
+    "intent": "change",
+    "target": "a fresh copy,",
+    "paragraph": 4,
+    "src_lines": [
+      9,
+      10
+    ],
+    "src_line": 10,
+    "note": "love it!",
+    "note_status": "transcribed"
+  }
+]

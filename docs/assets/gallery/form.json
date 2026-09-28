@@ -1,0 +1,11 @@
+{
+  "answered": true,
+  "values": {
+    "publish": "Yes",
+    "where": [
+      "Blog",
+      "HN"
+    ],
+    "notes": "after the typo fix"
+  }
+}

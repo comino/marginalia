@@ -1,0 +1,21 @@
+name: Bug
+description: Something Marginalia got wrong (a mark misread, a tool error, a crash)
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: For ink, describe what you drew and what came back (the tool output helps a lot).
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Tool call(s) and arguments. Please don't attach private documents; a photo or a redrawn sketch is enough.
+  - type: input
+    id: version
+    attributes:
+      label: Marginalia version / tablet
+      placeholder: "marginalia-1.2.0, reMarkable 2 (3.28)"
